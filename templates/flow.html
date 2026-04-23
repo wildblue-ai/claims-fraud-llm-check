@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Flow — Insurance Fraud POC</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .phase-box { transition: transform 0.15s; }
+    .phase-box:hover { transform: translateY(-2px); }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <header class="bg-[#003b71] text-white shadow">
+    <div class="max-w-7xl mx-auto px-6 pt-6 pb-2 flex items-center justify-between">
+      <h1 class="text-2xl font-semibold">Insurance Fraud Detection POC</h1>
+      <span class="text-sm text-teal-200 uppercase tracking-wider">Fraud, Waste &amp; Abuse Prototype</span>
+    </div>
+    <nav class="max-w-7xl mx-auto px-6 pb-3 flex gap-5 text-sm flex-wrap">
+      <a href="/" class="text-teal-100 hover:text-white pb-1">Dashboard</a>
+      <a href="/demo" class="text-teal-100 hover:text-white pb-1">Guided Demo</a>
+      <a href="/product" class="text-teal-100 hover:text-white pb-1">Product</a>
+      <a href="/prompts" class="text-teal-100 hover:text-white pb-1">Prompts</a>
+      <a href="/flow" class="text-white border-b-2 border-teal-300 pb-1 font-medium">Flow</a>
+    </nav>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6 space-y-12">
+
+    <!-- BUILD FLOW -->
+    <section>
+      <div class="mb-4">
+        <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Build-time</div>
+        <h2 class="text-xl font-semibold text-slate-800 mt-1">How this POC was built</h2>
+        <p class="text-sm text-slate-600 mt-1 max-w-3xl">
+          Three self-verifying Claude Code subagents, dispatched sequentially. Each phase has a numeric pass condition and either retries within a bounded tuning knob (Phases&nbsp;1–2) or halts and escalates (Phase&nbsp;3). Reports go to <code class="bg-slate-200 px-1 rounded text-xs">reports/phase-N.md</code>.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-3 gap-4">
+        <!-- Phase 1 -->
+        <div class="phase-box bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+          <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Phase 1</div>
+          <div class="text-base font-semibold text-slate-800 mt-0.5">Data generation</div>
+          <div class="text-xs text-slate-500 mt-0.5">Retry budget: 3</div>
+
+          <div class="mt-3 space-y-2 text-xs">
+            <div class="bg-blue-50 border border-blue-200 rounded p-2 font-mono text-blue-900">prompts/phase-1-data.md</div>
+            <div class="text-center text-slate-400">↓</div>
+            <div class="bg-amber-100 border border-amber-300 rounded p-2 text-center font-semibold text-amber-900">Task subagent</div>
+            <div class="text-center text-slate-400">↓ writes</div>
+            <div class="bg-emerald-50 border border-emerald-200 rounded p-2 font-mono text-emerald-900">generate_data.py<br>data/claims.json</div>
+          </div>
+
+          <div class="mt-3 bg-slate-50 border-l-4 border-blue-500 p-3 text-xs text-slate-700 leading-relaxed">
+            <div class="font-semibold text-blue-800 uppercase tracking-wider text-[10px]">Pass if</div>
+            500 rows · fraud rate in [3%, 5%] · 3 fraudster providers
+            <div class="font-semibold text-blue-800 uppercase tracking-wider text-[10px] mt-2">Tune</div>
+            flip rate (60–85%)
+          </div>
+        </div>
+
+        <!-- Phase 2 -->
+        <div class="phase-box bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+          <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Phase 2</div>
+          <div class="text-base font-semibold text-slate-800 mt-0.5">Detection</div>
+          <div class="text-xs text-slate-500 mt-0.5">Retry budget: 3</div>
+
+          <div class="mt-3 space-y-2 text-xs">
+            <div class="bg-blue-50 border border-blue-200 rounded p-2 font-mono text-blue-900">prompts/phase-2-detect.md</div>
+            <div class="text-center text-slate-400">↓</div>
+            <div class="bg-amber-100 border border-amber-300 rounded p-2 text-center font-semibold text-amber-900">Task subagent</div>
+            <div class="text-center text-slate-400">↓ reads claims.json</div>
+            <div class="bg-emerald-50 border border-emerald-200 rounded p-2 font-mono text-emerald-900">detection.py<br>data/claims_scored.json</div>
+          </div>
+
+          <div class="mt-3 bg-slate-50 border-l-4 border-blue-500 p-3 text-xs text-slate-700 leading-relaxed">
+            <div class="font-semibold text-blue-800 uppercase tracking-wider text-[10px]">Pass if</div>
+            recall ≥ 0.70 on injected fraud
+            <div class="font-semibold text-blue-800 uppercase tracking-wider text-[10px] mt-2">Tune</div>
+            z-score threshold (1.5–2.5)
+          </div>
+        </div>
+
+        <!-- Phase 3 -->
+        <div class="phase-box bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+          <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Phase 3</div>
+          <div class="text-base font-semibold text-slate-800 mt-0.5">App</div>
+          <div class="text-xs text-red-600 mt-0.5 font-semibold">Halt-and-escalate</div>
+
+          <div class="mt-3 space-y-2 text-xs">
+            <div class="bg-blue-50 border border-blue-200 rounded p-2 font-mono text-blue-900">prompts/phase-3-app.md</div>
+            <div class="text-center text-slate-400">↓</div>
+            <div class="bg-amber-100 border border-amber-300 rounded p-2 text-center font-semibold text-amber-900">Task subagent</div>
+            <div class="text-center text-slate-400">↓ reads claims_scored.json</div>
+            <div class="bg-emerald-50 border border-emerald-200 rounded p-2 font-mono text-emerald-900">main.py · templates/index.html<br>README.md · requirements.txt</div>
+          </div>
+
+          <div class="mt-3 bg-slate-50 border-l-4 border-red-500 p-3 text-xs text-slate-700 leading-relaxed">
+            <div class="font-semibold text-red-800 uppercase tracking-wider text-[10px]">Pass if</div>
+            imports clean · uvicorn binds · GET / returns hero stats · GET /explain returns a real Claude response
+            <div class="font-semibold text-red-800 uppercase tracking-wider text-[10px] mt-2">No retry</div>
+            first failure → diagnosis report + surface to user
+          </div>
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="mt-6 flex gap-6 text-xs text-slate-500">
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded border border-blue-200 bg-blue-50"></span>Prompt file</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded border border-amber-300 bg-amber-100"></span>Subagent</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded border border-emerald-200 bg-emerald-50"></span>Code or data artifact</div>
+      </div>
+    </section>
+
+    <!-- RUNTIME FLOW -->
+    <section class="pt-6 border-t border-slate-200">
+      <div class="mb-4">
+        <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Runtime</div>
+        <h2 class="text-xl font-semibold text-slate-800 mt-1">What happens when a reviewer uses the demo</h2>
+        <p class="text-sm text-slate-600 mt-1 max-w-3xl">
+          The dashboard is static except for the "Analyze" button, which triggers an HTMX call to a Claude-backed endpoint. Responses are cached in memory so the same claim returns instantly on re-click.
+        </p>
+      </div>
+
+      <div class="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+        <div class="grid grid-cols-5 gap-3 items-center text-xs">
+          <div class="bg-slate-100 border border-slate-300 rounded p-3 text-center">
+            <div class="font-semibold text-slate-800">User</div>
+            <div class="text-slate-500 mt-1">clicks ▼ Analyze</div>
+          </div>
+          <div class="text-center text-slate-400 font-mono">→</div>
+          <div class="bg-teal-50 border border-teal-200 rounded p-3 text-center">
+            <div class="font-semibold text-teal-900">HTMX</div>
+            <div class="text-slate-500 mt-1 font-mono text-[10px]">hx-get /explain/&lbrace;id&rbrace;</div>
+          </div>
+          <div class="text-center text-slate-400 font-mono">→</div>
+          <div class="bg-indigo-50 border border-indigo-200 rounded p-3 text-center">
+            <div class="font-semibold text-indigo-900">FastAPI</div>
+            <div class="text-slate-500 mt-1 font-mono text-[10px]">main.py : explain()</div>
+          </div>
+        </div>
+
+        <div class="flex justify-center my-3"><span class="text-slate-400 font-mono text-xs">↓ cache hit? return instantly</span></div>
+
+        <div class="grid grid-cols-5 gap-3 items-center text-xs">
+          <div class="bg-indigo-50 border border-indigo-200 rounded p-3 text-center">
+            <div class="font-semibold text-indigo-900">Build prompt</div>
+            <div class="text-slate-500 mt-1 text-[10px]">substitute claim + provider fields into PROMPT_TEMPLATE</div>
+          </div>
+          <div class="text-center text-slate-400 font-mono">→</div>
+          <div class="bg-amber-50 border border-amber-300 rounded p-3 text-center">
+            <div class="font-semibold text-amber-900">Claude</div>
+            <div class="text-slate-500 mt-1 font-mono text-[10px]">sonnet-4-5 · 300t · 0.3</div>
+          </div>
+          <div class="text-center text-slate-400 font-mono">→</div>
+          <div class="bg-emerald-50 border border-emerald-200 rounded p-3 text-center">
+            <div class="font-semibold text-emerald-900">HTML snippet</div>
+            <div class="text-slate-500 mt-1 text-[10px]">cached &amp; swapped into the row</div>
+          </div>
+        </div>
+
+        <div class="mt-6 text-xs text-slate-600 bg-slate-50 border-l-4 border-slate-300 p-3 rounded">
+          <span class="font-semibold">Typical latency:</span> 2–4 seconds for the first click on a given claim · near-instant on repeat (cache hit).
+          <span class="block mt-1"><span class="font-semibold">Failure modes the Phase 3 verification caught:</span> missing API key, broken template rendering, bad response parsing.</span>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

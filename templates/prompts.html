@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Prompts — Insurance Fraud POC</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50">
+  <header class="bg-[#003b71] text-white shadow">
+    <div class="max-w-7xl mx-auto px-6 pt-6 pb-2 flex items-center justify-between">
+      <h1 class="text-2xl font-semibold">Insurance Fraud Detection POC</h1>
+      <span class="text-sm text-teal-200 uppercase tracking-wider">Fraud, Waste &amp; Abuse Prototype</span>
+    </div>
+    <nav class="max-w-7xl mx-auto px-6 pb-3 flex gap-5 text-sm flex-wrap">
+      <a href="/" class="text-teal-100 hover:text-white pb-1">Dashboard</a>
+      <a href="/demo" class="text-teal-100 hover:text-white pb-1">Guided Demo</a>
+      <a href="/product" class="text-teal-100 hover:text-white pb-1">Product</a>
+      <a href="/prompts" class="text-white border-b-2 border-teal-300 pb-1 font-medium">Prompts</a>
+      <a href="/flow" class="text-teal-100 hover:text-white pb-1">Flow</a>
+    </nav>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6">
+    <div class="mb-6">
+      <h2 class="text-xl font-semibold text-slate-800">Prompts in this system</h2>
+      <p class="text-sm text-slate-600 mt-1 max-w-3xl">
+        Four prompts drive this POC. The first three are <strong>build-time</strong> prompts — each was dispatched as a self-verifying Claude Code subagent that produced code, ran it, checked a numeric pass condition, and wrote a report. The fourth is the <strong>runtime</strong> prompt — called every time a user clicks "Analyze" on a flagged row.
+      </p>
+    </div>
+
+    <section class="space-y-4">
+      {% for p in build_prompts %}
+      <details class="bg-white rounded-lg shadow border-l-4 border-[#003b71] group" {% if loop.first %}open{% endif %}>
+        <summary class="cursor-pointer px-5 py-4 flex items-center justify-between select-none">
+          <div>
+            <div class="text-xs uppercase tracking-wider text-slate-500">Build-time prompt</div>
+            <div class="text-lg font-semibold text-slate-800 mt-0.5">{{ p.label }}</div>
+            <div class="text-xs font-mono text-slate-500 mt-0.5">prompts/{{ p.filename }}</div>
+          </div>
+          <span class="text-slate-400 text-sm group-open:rotate-180 transition-transform">▼</span>
+        </summary>
+        <div class="px-5 pb-5">
+          <pre class="bg-slate-900 text-slate-100 text-xs leading-relaxed p-4 rounded overflow-x-auto whitespace-pre-wrap">{{ p.content }}</pre>
+        </div>
+      </details>
+      {% endfor %}
+
+      <details class="bg-white rounded-lg shadow border-l-4 border-amber-500 group" open>
+        <summary class="cursor-pointer px-5 py-4 flex items-center justify-between select-none">
+          <div>
+            <div class="text-xs uppercase tracking-wider text-amber-600 font-semibold">Runtime prompt · customer-facing</div>
+            <div class="text-lg font-semibold text-slate-800 mt-0.5">Fraud-analyst narrative (<code class="text-sm font-mono text-pink-700 bg-slate-100 px-1 rounded">/explain/{claim_id}</code>)</div>
+            <div class="text-xs font-mono text-slate-500 mt-0.5">embedded in main.py · claude-sonnet-4-5 · max_tokens=300 · temperature=0.3</div>
+          </div>
+          <span class="text-slate-400 text-sm group-open:rotate-180 transition-transform">▼</span>
+        </summary>
+        <div class="px-5 pb-5">
+          <div class="bg-amber-50 border-l-4 border-amber-400 p-3 mb-3 rounded text-sm text-amber-900">
+            This is the prompt a reviewer actually evaluates. Everything else is scaffolding to get here. Tone, length, and the three-category framing (likely fraud / doc error / false positive) are deliberate.
+          </div>
+          <pre class="bg-slate-900 text-slate-100 text-xs leading-relaxed p-4 rounded overflow-x-auto whitespace-pre-wrap">{{ explain_prompt }}</pre>
+        </div>
+      </details>
+    </section>
+
+    <div class="mt-8 text-xs text-slate-500">
+      <p>Field values in braces (e.g. <code class="bg-slate-200 px-1 rounded">{claim_id}</code>) are substituted at request time from the flagged claim and its provider summary.</p>
+    </div>
+  </main>
+</body>
+</html>
