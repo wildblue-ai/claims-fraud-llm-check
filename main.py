@@ -9,8 +9,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import anthropic
+import uuid
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -557,6 +558,7 @@ def _shared_header(active: str = "") -> str:
     links = [
         ("dashboard", "/", "Dashboard"),
         ("demo", "/demo", "Guided Demo"),
+        ("try", "/try", "Try a claim"),
         ("product", "/product", "Product"),
         ("prompts", "/prompts", "Prompts"),
         ("flow", "/flow", "Flow"),
@@ -742,6 +744,308 @@ def prompts_page(request: Request):
 @app.get("/flow", response_class=HTMLResponse)
 def flow_page(request: Request):
     return templates.TemplateResponse(request, "flow.html", {})
+
+
+# Pick a "clean" provider (lowest premium_progressive rate, excluding zero-claim outliers)
+_clean_provider_candidates = sorted(
+    [
+        pid
+        for pid, s in provider_summary.items()
+        if s["claim_count"] >= 10 and s["premium_rate"] <= 20
+    ],
+    key=lambda p: provider_summary[p]["premium_rate"],
+)
+_CLEAN_PROVIDER_ID = _clean_provider_candidates[0] if _clean_provider_candidates else next(iter(provider_summary))
+
+# Pick a fraudster (highest premium_progressive rate)
+_fraudster_candidates = sorted(
+    provider_summary.items(), key=lambda kv: kv[1]["premium_rate"], reverse=True
+)
+_FRAUDSTER_PROVIDER_ID = _fraudster_candidates[0][0]
+
+
+def _build_synthetic_claim(
+    provider_id: str, lens_type: str, billed_amount: float
+) -> dict:
+    """Build a synthetic claim dict that scores against existing population stats."""
+    psum = provider_summary.get(provider_id, {})
+    rate = psum.get("lens_pct", {}).get("premium_progressive", 0) / 100.0
+    mean = population_premium_mean
+    stdev = population_premium_stdev
+    z = (rate - mean) / stdev if stdev > 0 else 0.0
+    risk = max(0.0, min(100.0, z * 25.0))
+    triggered = z > DETECTION_THRESHOLD_SIGMA
+
+    # Use a matched member from this provider if any, else M999-test
+    m_claims = [c for c in claims.values() if c["provider_id"] == provider_id]
+    state = m_claims[0].get("provider_state", "CA") if m_claims else "CA"
+    member_id = m_claims[0].get("member_id", "M999") if m_claims else "M999"
+
+    rule_reason = None
+    triggered_rule = None
+    if triggered:
+        triggered_rule = "provider_upcoding"
+        rule_reason = (
+            f"Provider {provider_id} bills premium_progressive at {rate*100:.0f}% "
+            f"vs population mean of {mean*100:.0f}% (z={z:.1f})"
+        )
+
+    return {
+        "claim_id": f"synth-{uuid.uuid4().hex[:12]}",
+        "provider_id": provider_id,
+        "provider_state": state,
+        "member_id": member_id,
+        "service_date": "2026-04-24",
+        "exam_cpt": "92014",
+        "lens_type": lens_type,
+        "lens_addons": [],
+        "billed_amount": billed_amount,
+        "paid_amount": round(billed_amount * 0.78, 2),
+        "is_fraud": False,  # ground-truth unknown for synthetic
+        "fraud_type": None,
+        "risk_score": round(risk, 2),
+        "triggered": triggered,
+        "triggered_rule": triggered_rule,
+        "rule_reason": rule_reason,
+    }
+
+
+def _call_claude_for_synthetic(claim: dict) -> tuple[str, str, dict]:
+    """Call Claude for a synthetic claim. Returns (triage, narrative_text, meta)."""
+    psum = provider_summary.get(
+        claim["provider_id"], {"claim_count": 0, "premium_rate": 0, "total_billed": 0}
+    )
+    prompt = PROMPT_TEMPLATE.format(
+        claim_id=claim["claim_id"],
+        provider_id=claim["provider_id"],
+        provider_state=claim.get("provider_state", ""),
+        member_id=claim.get("member_id", ""),
+        service_date=claim.get("service_date", ""),
+        exam_cpt=claim.get("exam_cpt", ""),
+        lens_type=claim.get("lens_type", ""),
+        billed_amount=claim.get("billed_amount", 0),
+        rule_reason=claim.get("rule_reason", "") or "(rule did not fire)",
+        provider_claim_count=psum["claim_count"],
+        provider_premium_rate=psum["premium_rate"],
+        provider_total_billed=psum["total_billed"],
+    )
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=300,
+        temperature=0.3,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw_text = response.content[0].text
+    triage, narrative_text = _parse_triage(raw_text)
+    meta = {
+        "prompt": prompt,
+        "raw_response": raw_text,
+        "input_tokens": getattr(response.usage, "input_tokens", "?"),
+        "output_tokens": getattr(response.usage, "output_tokens", "?"),
+        "stop_reason": getattr(response, "stop_reason", "?"),
+    }
+    return triage, narrative_text, meta
+
+
+@app.get("/try", response_class=HTMLResponse)
+def try_page():
+    # Provider dropdown: sort by premium_rate desc so fraudsters float to top
+    provider_opts = sorted(
+        provider_summary.items(),
+        key=lambda kv: (-kv[1]["premium_rate"], kv[0]),
+    )
+    opt_html = "".join(
+        f'<option value="{pid}">{pid} — {s["premium_rate"]}% premium · {s["claim_count"]} claims</option>'
+        for pid, s in provider_opts
+    )
+
+    body = f'''<!DOCTYPE html>
+<html><head>
+  <title>Try a claim — Insurance Fraud POC</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head><body class="bg-slate-50">
+{_shared_header("try")}
+<main class="max-w-7xl mx-auto p-6">
+  <div class="mb-6 max-w-3xl">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Interactive sandbox</div>
+    <h2 class="text-2xl font-semibold text-slate-800">Build a claim, watch it get triaged</h2>
+    <p class="text-sm text-slate-600 mt-2 leading-relaxed">
+      Pick any combination of provider + lens type + billed amount. The deterministic rule in <code class="bg-slate-100 px-1 rounded text-xs">detection.py</code> scores it against the existing population. If it fires, Claude triages it in real time with the exact same prompt used on the dashboard. Nothing is cached.
+    </p>
+  </div>
+
+  <div class="grid grid-cols-12 gap-6">
+    <!-- Left: form -->
+    <section class="col-span-4">
+      <div class="bg-white rounded-lg shadow p-5">
+        <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-2">Presets</div>
+        <div class="grid gap-2 mb-4">
+          <button class="text-left px-3 py-2 rounded border border-red-300 bg-red-50 hover:bg-red-100 text-sm text-red-900" type="button"
+                  hx-post="/try/triage" hx-target="#try-result" hx-swap="innerHTML" hx-indicator="#try-spinner"
+                  hx-vals='{{"provider_id":"{_FRAUDSTER_PROVIDER_ID}","lens_type":"premium_progressive","billed_amount":"600"}}'>
+            <div class="font-semibold">Clear upcoding</div>
+            <div class="text-xs text-red-800 opacity-80">premium_progressive · $600 · at fraudster {_FRAUDSTER_PROVIDER_ID}</div>
+          </button>
+          <button class="text-left px-3 py-2 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-sm text-amber-900" type="button"
+                  hx-post="/try/triage" hx-target="#try-result" hx-swap="innerHTML" hx-indicator="#try-spinner"
+                  hx-vals='{{"provider_id":"{_FRAUDSTER_PROVIDER_ID}","lens_type":"premium_progressive","billed_amount":"450"}}'>
+            <div class="font-semibold">Ambiguous premium</div>
+            <div class="text-xs text-amber-800 opacity-80">premium_progressive · $450 · at fraudster {_FRAUDSTER_PROVIDER_ID}</div>
+          </button>
+          <button class="text-left px-3 py-2 rounded border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-sm text-emerald-900" type="button"
+                  hx-post="/try/triage" hx-target="#try-result" hx-swap="innerHTML" hx-indicator="#try-spinner"
+                  hx-vals='{{"provider_id":"{_FRAUDSTER_PROVIDER_ID}","lens_type":"bifocal","billed_amount":"250"}}'>
+            <div class="font-semibold">Bifocal at fraudster</div>
+            <div class="text-xs text-emerald-800 opacity-80">bifocal · $250 · at fraudster {_FRAUDSTER_PROVIDER_ID}</div>
+          </button>
+          <button class="text-left px-3 py-2 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-sm text-slate-700" type="button"
+                  hx-post="/try/triage" hx-target="#try-result" hx-swap="innerHTML" hx-indicator="#try-spinner"
+                  hx-vals='{{"provider_id":"{_CLEAN_PROVIDER_ID}","lens_type":"single","billed_amount":"200"}}'>
+            <div class="font-semibold">Clean / rule should not fire</div>
+            <div class="text-xs text-slate-600 opacity-80">single · $200 · at clean provider {_CLEAN_PROVIDER_ID}</div>
+          </button>
+        </div>
+
+        <div class="border-t border-slate-200 pt-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-2">Or build your own</div>
+          <form hx-post="/try/triage" hx-target="#try-result" hx-swap="innerHTML" hx-indicator="#try-spinner" class="space-y-3">
+            <div>
+              <label class="text-xs font-semibold text-slate-700 block mb-1">Provider</label>
+              <select name="provider_id" class="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-white">
+                {opt_html}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-slate-700 block mb-1">Lens type</label>
+              <select name="lens_type" class="w-full text-sm border border-slate-300 rounded px-2 py-1.5 bg-white">
+                <option>single</option><option>bifocal</option><option>progressive</option>
+                <option selected>premium_progressive</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-slate-700 block mb-1">Billed amount ($)</label>
+              <input type="number" name="billed_amount" value="400" step="25" min="100" max="1000"
+                     class="w-full text-sm border border-slate-300 rounded px-2 py-1.5 bg-white">
+            </div>
+            <button type="submit" class="w-full bg-[#003b71] hover:bg-blue-900 text-white rounded py-2 text-sm font-semibold">
+              Triage this claim →
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <div class="mt-3 text-[11px] text-slate-500 leading-relaxed">
+        Member, date, CPT, and addon fields use sensible defaults. The rule only looks at provider-level statistics, so only provider_id, lens_type, and billed_amount are meaningful inputs.
+      </div>
+    </section>
+
+    <!-- Right: result -->
+    <section class="col-span-8">
+      <div id="try-spinner" class="htmx-indicator">
+        <div class="bg-white rounded-lg shadow p-8 text-center">
+          <div class="inline-block w-8 h-8 border-4 border-slate-200 border-t-[#003b71] rounded-full animate-spin"></div>
+          <div class="mt-3 text-sm text-slate-600">Running detection rule, then calling Claude…</div>
+          <div class="mt-1 text-xs text-slate-400">Typically 2–4 seconds.</div>
+        </div>
+      </div>
+      <div id="try-result">
+        <div class="bg-white rounded-lg shadow p-8 text-center text-slate-400 text-sm">
+          Choose a preset or submit the form to see the rule + Claude triage in action.
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <style>
+    .htmx-indicator {{ display: none; }}
+    .htmx-request .htmx-indicator {{ display: block; }}
+    .htmx-request #try-result {{ display: none; }}
+  </style>
+</main></body></html>'''
+    return HTMLResponse(content=body)
+
+
+@app.post("/try/triage", response_class=HTMLResponse)
+def try_triage(
+    provider_id: str = Form(...),
+    lens_type: str = Form(...),
+    billed_amount: float = Form(...),
+):
+    if provider_id not in provider_summary:
+        raise HTTPException(status_code=400, detail=f"Unknown provider {provider_id}")
+    if lens_type not in LENS_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown lens_type {lens_type}")
+    if not (50 <= billed_amount <= 2000):
+        raise HTTPException(status_code=400, detail="billed_amount out of range")
+
+    claim = _build_synthetic_claim(provider_id, lens_type, billed_amount)
+
+    # Build inputs summary card (always shown)
+    inputs_card = f'''
+<div class="bg-slate-900 text-slate-100 rounded-lg p-4 mb-3 text-xs font-mono">
+  <div class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Synthetic claim · {claim["claim_id"][:12]}</div>
+  <div class="grid grid-cols-2 gap-x-6 gap-y-1">
+    <span><span class="text-slate-400">provider_id:</span> {provider_id}</span>
+    <span><span class="text-slate-400">provider_state:</span> {claim["provider_state"]}</span>
+    <span><span class="text-slate-400">lens_type:</span> {lens_type}</span>
+    <span><span class="text-slate-400">billed_amount:</span> ${billed_amount:,.0f}</span>
+    <span><span class="text-slate-400">exam_cpt:</span> {claim["exam_cpt"]}</span>
+    <span><span class="text-slate-400">service_date:</span> {claim["service_date"]}</span>
+  </div>
+</div>
+'''
+
+    # If rule didn't fire, show "not flagged" and skip Claude
+    if not claim["triggered"]:
+        rate = provider_summary[provider_id]["premium_rate"]
+        z = (
+            rate / 100.0 - population_premium_mean
+        ) / population_premium_stdev if population_premium_stdev > 0 else 0.0
+        return HTMLResponse(
+            inputs_card
+            + f'''
+<div class="bg-emerald-50 border-l-4 border-emerald-400 p-4 rounded">
+  <div class="text-xs uppercase tracking-wider text-emerald-700 font-semibold mb-1">Rule did not fire — no triage needed</div>
+  <p class="text-slate-800 text-sm leading-relaxed">
+    Provider {provider_id} bills premium_progressive at <strong>{rate}%</strong>,
+    within population norms (mean {population_premium_mean*100:.0f}%, z={z:+.2f}, threshold {DETECTION_THRESHOLD_SIGMA}σ).
+    This claim would not be surfaced to an investigator, and no Claude call is made. The demo works whether or not the rule fires — this is the "rule determines the gate" half of the product argument.
+  </p>
+</div>
+'''
+        )
+
+    # Rule fired: call Claude
+    triage, narrative_text, meta = _call_claude_for_synthetic(claim)
+
+    triage_labels = {
+        "likely_fraud": ("Likely fraud", "bg-red-100 text-red-800 border-red-300"),
+        "doc_error": ("Doc/coding error", "bg-amber-100 text-amber-800 border-amber-300"),
+        "false_positive": ("False positive", "bg-emerald-100 text-emerald-800 border-emerald-300"),
+        "unknown": ("Unclassified", "bg-slate-100 text-slate-700 border-slate-300"),
+    }
+    t_label, t_cls = triage_labels.get(triage, triage_labels["unknown"])
+
+    narrative = (
+        '<div class="bg-amber-50 border-l-4 border-amber-400 p-4 rounded">'
+        '<div class="text-xs uppercase tracking-wide text-amber-700 mb-1 font-semibold">AI Fraud Analyst Review</div>'
+        f'<span class="inline-block px-2 py-0.5 rounded text-xs font-semibold border {t_cls} mb-2">{t_label}</span>'
+        f'<p class="text-gray-800">{html_lib.escape(narrative_text)}</p>'
+        "</div>"
+    )
+    rule_receipt = _render_rule_receipt(claim)
+    receipts = _render_receipts(
+        prompt=meta["prompt"],
+        raw_response=meta["raw_response"],
+        model="claude-sonnet-4-5",
+        max_tokens=300,
+        temperature=0.3,
+        input_tokens=meta["input_tokens"],
+        output_tokens=meta["output_tokens"],
+        stop_reason=meta["stop_reason"],
+    )
+    return HTMLResponse(inputs_card + narrative + rule_receipt + receipts)
 
 
 def _pick_demo_claims() -> list[dict]:
