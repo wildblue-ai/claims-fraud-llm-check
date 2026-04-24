@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import json
 import random
+import os
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
-SEED = 42
+# SEED=env override lets /reshuffle produce a different dataset each call;
+# default remains the original 42 so the committed build is reproducible.
+SEED = int(os.environ.get("DATA_SEED", "42"))
 NUM_CLAIMS = 500
 NUM_PROVIDERS = 30
 NUM_MEMBERS = 200

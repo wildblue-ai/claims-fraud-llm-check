@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import os
 import re
+import statistics as _stats
+import subprocess
 import threading
+import uuid
 from collections import defaultdict
 from pathlib import Path
 
 import anthropic
-import uuid
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -21,66 +24,106 @@ BASE_DIR = Path(__file__).parent
 DATA_PATH = BASE_DIR / "data" / "claims_scored.json"
 PROMPTS_DIR = BASE_DIR / "prompts"
 
-# Load claims at import time
-with open(DATA_PATH) as f:
-    _claims_list = json.load(f)
-
-claims: dict[str, dict] = {c["claim_id"]: c for c in _claims_list}
-
 LENS_TYPES = ("single", "bifocal", "progressive", "premium_progressive")
 
-# Precompute provider summary (including per-lens counts)
-_provider_agg: dict[str, dict] = defaultdict(
-    lambda: {
-        "claim_count": 0,
-        "total_billed": 0.0,
-        "lens_counts": {lt: 0 for lt in LENS_TYPES},
-    }
-)
-for c in _claims_list:
-    pid = c["provider_id"]
-    _provider_agg[pid]["claim_count"] += 1
-    _provider_agg[pid]["total_billed"] += c.get("billed_amount", 0) or 0
-    lt = c.get("lens_type")
-    if lt in _provider_agg[pid]["lens_counts"]:
-        _provider_agg[pid]["lens_counts"][lt] += 1
-
+# Mutable module-level state, refreshed by _reload_state()
+claims: dict[str, dict] = {}
 provider_summary: dict[str, dict] = {}
-for pid, agg in _provider_agg.items():
-    cc = agg["claim_count"]
-    lens_pct = {
-        lt: (100 * agg["lens_counts"][lt] / cc) if cc else 0 for lt in LENS_TYPES
-    }
-    provider_summary[pid] = {
-        "claim_count": cc,
-        "premium_rate": int(round(lens_pct["premium_progressive"])),
-        "total_billed": int(round(agg["total_billed"])),
-        "lens_pct": lens_pct,
-        "lens_counts": dict(agg["lens_counts"]),
-    }
+population_lens_pct: dict[str, float] = {}
+population_premium_mean: float = 0.0
+population_premium_stdev: float = 0.0
+explanation_cache: dict[str, str] = {}
+triage_by_claim: dict[str, str] = {}
+_CLEAN_PROVIDER_ID: str = ""
+_FRAUDSTER_PROVIDER_ID: str = ""
+_reload_lock = threading.Lock()
 
-# Population lens distribution across all 500 claims
-_pop_counts = {lt: 0 for lt in LENS_TYPES}
-for c in _claims_list:
-    lt = c.get("lens_type")
-    if lt in _pop_counts:
-        _pop_counts[lt] += 1
-_total = sum(_pop_counts.values()) or 1
-population_lens_pct = {lt: 100 * _pop_counts[lt] / _total for lt in LENS_TYPES}
 
-# Population stats on provider-level premium_progressive rate (what the rule uses)
-import statistics as _stats
+def _reload_state() -> None:
+    """(Re)load claims + recompute all derived state. Safe to call repeatedly."""
+    global claims, provider_summary, population_lens_pct
+    global population_premium_mean, population_premium_stdev
+    global _CLEAN_PROVIDER_ID, _FRAUDSTER_PROVIDER_ID
 
-_provider_premium_rates = [
-    s["lens_pct"]["premium_progressive"] / 100.0 for s in provider_summary.values()
-]
-population_premium_mean = _stats.fmean(_provider_premium_rates) if _provider_premium_rates else 0.0
-population_premium_stdev = (
-    _stats.pstdev(_provider_premium_rates) if len(_provider_premium_rates) > 1 else 0.0
-)
+    with _reload_lock:
+        with open(DATA_PATH) as f:
+            claims_list = json.load(f)
+
+        claims = {c["claim_id"]: c for c in claims_list}
+
+        provider_agg: dict[str, dict] = defaultdict(
+            lambda: {
+                "claim_count": 0,
+                "total_billed": 0.0,
+                "lens_counts": {lt: 0 for lt in LENS_TYPES},
+            }
+        )
+        for c in claims_list:
+            pid = c["provider_id"]
+            provider_agg[pid]["claim_count"] += 1
+            provider_agg[pid]["total_billed"] += c.get("billed_amount", 0) or 0
+            lt = c.get("lens_type")
+            if lt in provider_agg[pid]["lens_counts"]:
+                provider_agg[pid]["lens_counts"][lt] += 1
+
+        ps: dict[str, dict] = {}
+        for pid, agg in provider_agg.items():
+            cc = agg["claim_count"]
+            lens_pct = {
+                lt: (100 * agg["lens_counts"][lt] / cc) if cc else 0
+                for lt in LENS_TYPES
+            }
+            ps[pid] = {
+                "claim_count": cc,
+                "premium_rate": int(round(lens_pct["premium_progressive"])),
+                "total_billed": int(round(agg["total_billed"])),
+                "lens_pct": lens_pct,
+                "lens_counts": dict(agg["lens_counts"]),
+            }
+        provider_summary = ps
+
+        pop_counts = {lt: 0 for lt in LENS_TYPES}
+        for c in claims_list:
+            lt = c.get("lens_type")
+            if lt in pop_counts:
+                pop_counts[lt] += 1
+        total = sum(pop_counts.values()) or 1
+        population_lens_pct = {lt: 100 * pop_counts[lt] / total for lt in LENS_TYPES}
+
+        rates = [
+            s["lens_pct"]["premium_progressive"] / 100.0
+            for s in provider_summary.values()
+        ]
+        population_premium_mean = _stats.fmean(rates) if rates else 0.0
+        population_premium_stdev = _stats.pstdev(rates) if len(rates) > 1 else 0.0
+
+        clean_candidates = sorted(
+            [
+                pid
+                for pid, s in provider_summary.items()
+                if s["claim_count"] >= 10 and s["premium_rate"] <= 20
+            ],
+            key=lambda p: provider_summary[p]["premium_rate"],
+        )
+        _CLEAN_PROVIDER_ID = (
+            clean_candidates[0]
+            if clean_candidates
+            else next(iter(provider_summary), "")
+        )
+        _FRAUDSTER_PROVIDER_ID = (
+            max(provider_summary.items(), key=lambda kv: kv[1]["premium_rate"])[0]
+            if provider_summary
+            else ""
+        )
+
+        # Fresh data invalidates prior triage + explanation cache
+        explanation_cache.clear()
+        triage_by_claim.clear()
+
+
 DETECTION_THRESHOLD_SIGMA = 2.0  # must match detection.py's chosen threshold
 
-explanation_cache: dict[str, str] = {}
+_reload_state()
 
 client = anthropic.Anthropic()
 
@@ -746,22 +789,56 @@ def flow_page(request: Request):
     return templates.TemplateResponse(request, "flow.html", {})
 
 
-# Pick a "clean" provider (lowest premium_progressive rate, excluding zero-claim outliers)
-_clean_provider_candidates = sorted(
-    [
-        pid
-        for pid, s in provider_summary.items()
-        if s["claim_count"] >= 10 and s["premium_rate"] <= 20
-    ],
-    key=lambda p: provider_summary[p]["premium_rate"],
-)
-_CLEAN_PROVIDER_ID = _clean_provider_candidates[0] if _clean_provider_candidates else next(iter(provider_summary))
+@app.post("/reshuffle", response_class=HTMLResponse)
+def reshuffle():
+    """Regenerate synthetic data, re-score, invalidate caches, restart warmup."""
+    import secrets
+    fresh_seed = str(secrets.randbelow(1_000_000))
+    env = {**os.environ, "DATA_SEED": fresh_seed}
+    try:
+        subprocess.run(
+            ["python3", "generate_data.py"],
+            check=True, cwd=BASE_DIR, timeout=60,
+            capture_output=True, text=True, env=env,
+        )
+        subprocess.run(
+            ["python3", "detection.py"],
+            check=True, cwd=BASE_DIR, timeout=60,
+            capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or e.stdout or str(e))[-800:]
+        return HTMLResponse(
+            f'<div class="bg-red-50 border-l-4 border-red-400 p-3 rounded text-xs text-red-800">'
+            f'Regeneration failed: <pre class="whitespace-pre-wrap mt-1">{html_lib.escape(err)}</pre></div>',
+            status_code=500,
+        )
+    except subprocess.TimeoutExpired:
+        return HTMLResponse(
+            '<div class="bg-red-50 border-l-4 border-red-400 p-3 rounded text-xs text-red-800">Regeneration timed out.</div>',
+            status_code=500,
+        )
 
-# Pick a fraudster (highest premium_progressive rate)
-_fraudster_candidates = sorted(
-    provider_summary.items(), key=lambda kv: kv[1]["premium_rate"], reverse=True
-)
-_FRAUDSTER_PROVIDER_ID = _fraudster_candidates[0][0]
+    _reload_state()
+    _kick_off_warmup()
+
+    new_total = len(claims)
+    new_flagged = sum(1 for c in claims.values() if c.get("triggered"))
+    new_fraud = sum(1 for c in claims.values() if c.get("is_fraud"))
+
+    return HTMLResponse(
+        f'''<div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded text-xs text-emerald-800 flex items-center gap-3"
+               hx-trigger="load delay:1500ms"
+               hx-get="/"
+               hx-target="body"
+               hx-swap="outerHTML">
+  <div class="flex-1">
+    <div class="font-semibold">Regenerated.</div>
+    <div class="mt-0.5">{new_total} claims · {new_fraud} seeded fraud · {new_flagged} flagged by the rule · AI triage restarting.</div>
+  </div>
+  <div class="text-[10px] text-emerald-700">reloading dashboard…</div>
+</div>'''
+    )
 
 
 def _build_synthetic_claim(
