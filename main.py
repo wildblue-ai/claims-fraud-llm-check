@@ -37,6 +37,7 @@ triage_by_claim: dict[str, str] = {}
 _CLEAN_PROVIDER_ID: str = ""
 _FRAUDSTER_PROVIDER_ID: str = ""
 _reload_lock = threading.Lock()
+_data_generation: int = 0  # bumped by _reload_state(); stale warmup threads exit when this changes
 
 
 def _reload_state() -> None:
@@ -44,8 +45,10 @@ def _reload_state() -> None:
     global claims, provider_summary, population_lens_pct
     global population_premium_mean, population_premium_stdev
     global _CLEAN_PROVIDER_ID, _FRAUDSTER_PROVIDER_ID
+    global _data_generation
 
     with _reload_lock:
+        _data_generation += 1
         with open(DATA_PATH) as f:
             claims_list = json.load(f)
 
@@ -1421,15 +1424,25 @@ def product_page():
 # dashboard risk badges render in red/amber/green rather than neutral gray.
 
 def _warmup_cache() -> None:
+    my_generation = _data_generation
     flagged_ids = [c["claim_id"] for c in claims.values() if c.get("triggered")]
+    triaged_here = 0
     for cid in flagged_ids:
+        # Bail if a newer reshuffle has invalidated this generation
+        if _data_generation != my_generation:
+            print(f"[warmup gen={my_generation}] aborting — newer generation started")
+            return
+        # Claim may have disappeared between snapshot and now
+        if cid not in claims:
+            continue
         if cid in explanation_cache:
             continue
         try:
             _build_explain_html(cid)
+            triaged_here += 1
         except Exception as e:
-            print(f"[warmup] skipped {cid[:8]}: {e}")
-    print(f"[warmup] done — {len(triage_by_claim)} claims triaged")
+            print(f"[warmup gen={my_generation}] skipped {cid[:8]}: {type(e).__name__}: {e}")
+    print(f"[warmup gen={my_generation}] done — triaged {triaged_here} of {len(flagged_ids)} flagged claims")
 
 
 def _kick_off_warmup() -> None:
