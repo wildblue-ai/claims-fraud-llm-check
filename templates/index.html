@@ -95,7 +95,11 @@
           </thead>
           <tbody class="divide-y divide-slate-100">
             {% for c in flagged_claims %}
-            <tr class="hover:bg-slate-50">
+            <tr class="hover:bg-slate-50 cursor-pointer"
+                hx-get="/explain/{{ c.claim_id }}"
+                hx-target="#detail-{{ c.claim_id }}"
+                hx-swap="innerHTML"
+                hx-trigger="click">
               {% set t = triage_by_claim.get(c.claim_id) %}
               {% if t == 'likely_fraud' %}
                 {% set bg = 'bg-red-200 text-red-900 border-red-400' %}{% set label = 'Likely fraud' %}
@@ -121,12 +125,8 @@
               <td class="px-4 py-3">{{ c.lens_type }}</td>
               <td class="px-4 py-3 font-medium">${{ "{:,.0f}".format(c.billed_amount) }}</td>
               <td class="px-4 py-3 text-slate-600">{{ c.triggered_rule }}</td>
-              <td class="px-4 py-3">
-                <button class="text-[#003b71] hover:text-teal-600 font-medium text-sm"
-                        hx-get="/explain/{{ c.claim_id }}"
-                        hx-target="#detail-{{ c.claim_id }}"
-                        hx-swap="innerHTML"
-                        hx-trigger="click">&#9660; Analyze</button>
+              <td class="px-4 py-3 text-right">
+                <span class="text-[#003b71] font-medium text-sm opacity-70">&#9660; Analyze</span>
               </td>
             </tr>
             <tr>
