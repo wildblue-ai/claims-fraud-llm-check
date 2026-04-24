@@ -791,23 +791,28 @@ def flow_page(request: Request):
 
 @app.post("/reshuffle", response_class=HTMLResponse)
 def reshuffle():
-    """Regenerate synthetic data, re-score, invalidate caches, restart warmup."""
+    """Regenerate synthetic data, re-score, invalidate caches, restart warmup.
+    Returns a terminal-style trace of the commands + their stdout; the user
+    dismisses it with an OK button that then reloads the dashboard."""
     import secrets
     fresh_seed = str(secrets.randbelow(1_000_000))
     env = {**os.environ, "DATA_SEED": fresh_seed}
+    gen_out = det_out = ""
     try:
-        subprocess.run(
+        gen = subprocess.run(
             ["python3", "generate_data.py"],
             check=True, cwd=BASE_DIR, timeout=60,
             capture_output=True, text=True, env=env,
         )
-        subprocess.run(
+        gen_out = (gen.stdout + gen.stderr).strip()
+        det = subprocess.run(
             ["python3", "detection.py"],
             check=True, cwd=BASE_DIR, timeout=60,
             capture_output=True, text=True,
         )
+        det_out = (det.stdout + det.stderr).strip()
     except subprocess.CalledProcessError as e:
-        err = (e.stderr or e.stdout or str(e))[-800:]
+        err = (e.stderr or e.stdout or str(e))[-1200:]
         return HTMLResponse(
             f'<div class="bg-red-50 border-l-4 border-red-400 p-3 rounded text-xs text-red-800">'
             f'Regeneration failed: <pre class="whitespace-pre-wrap mt-1">{html_lib.escape(err)}</pre></div>',
@@ -827,16 +832,39 @@ def reshuffle():
     new_fraud = sum(1 for c in claims.values() if c.get("is_fraud"))
 
     return HTMLResponse(
-        f'''<div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded text-xs text-emerald-800 flex items-center gap-3"
-               hx-trigger="load delay:1500ms"
-               hx-get="/"
-               hx-target="body"
-               hx-swap="outerHTML">
-  <div class="flex-1">
-    <div class="font-semibold">Regenerated.</div>
-    <div class="mt-0.5">{new_total} claims · {new_fraud} seeded fraud · {new_flagged} flagged by the rule · AI triage restarting.</div>
+        f'''<div class="bg-slate-900 text-slate-100 rounded-lg p-5 shadow-2xl my-3">
+  <div class="flex items-center justify-between mb-3">
+    <div class="text-xs uppercase tracking-widest text-amber-300 font-semibold">Reshuffle trace — what just ran</div>
+    <div class="text-[11px] text-slate-400 font-mono">DATA_SEED={fresh_seed}</div>
   </div>
-  <div class="text-[10px] text-emerald-700">reloading dashboard…</div>
+
+  <div class="mb-3">
+    <div class="text-xs text-green-400 font-mono">$ DATA_SEED={fresh_seed} python3 generate_data.py</div>
+    <pre class="text-xs text-slate-300 mt-1 ml-3 whitespace-pre-wrap">{html_lib.escape(gen_out) or "(no output)"}</pre>
+  </div>
+
+  <div class="mb-3">
+    <div class="text-xs text-green-400 font-mono">$ python3 detection.py</div>
+    <pre class="text-xs text-slate-300 mt-1 ml-3 whitespace-pre-wrap">{html_lib.escape(det_out) or "(no output)"}</pre>
+  </div>
+
+  <div class="mb-3">
+    <div class="text-xs text-green-400 font-mono"># server-side, in-process:</div>
+    <pre class="text-xs text-slate-300 mt-1 ml-3 whitespace-pre-wrap">_reload_state()   # rebuild claims dict, provider_summary, population stats
+_kick_off_warmup() # background thread, Claude triage on {new_flagged} flagged claims</pre>
+  </div>
+
+  <div class="mb-4 text-xs text-emerald-300 border-t border-slate-700 pt-3">
+    ✓ State reloaded. <span class="font-semibold">{new_total}</span> claims · <span class="font-semibold">{new_fraud}</span> seeded fraud · <span class="font-semibold">{new_flagged}</span> flagged by the rule · AI triage running in background.
+  </div>
+
+  <div class="flex items-center justify-between">
+    <div class="text-[11px] text-slate-500">No LLM was called for the reshuffle itself — just rule + rng. The triage call for each new flagged claim will run in the background once you return to the dashboard.</div>
+    <button hx-get="/" hx-target="body" hx-swap="outerHTML"
+            class="ml-4 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded font-semibold text-sm whitespace-nowrap">
+      OK — reload dashboard
+    </button>
+  </div>
 </div>'''
     )
 
