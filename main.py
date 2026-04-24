@@ -1,6 +1,7 @@
 """Insurance Fraud Detection POC — FastAPI app."""
 from __future__ import annotations
 
+import html as html_lib
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -63,6 +64,18 @@ for c in _claims_list:
         _pop_counts[lt] += 1
 _total = sum(_pop_counts.values()) or 1
 population_lens_pct = {lt: 100 * _pop_counts[lt] / _total for lt in LENS_TYPES}
+
+# Population stats on provider-level premium_progressive rate (what the rule uses)
+import statistics as _stats
+
+_provider_premium_rates = [
+    s["lens_pct"]["premium_progressive"] / 100.0 for s in provider_summary.values()
+]
+population_premium_mean = _stats.fmean(_provider_premium_rates) if _provider_premium_rates else 0.0
+population_premium_stdev = (
+    _stats.pstdev(_provider_premium_rates) if len(_provider_premium_rates) > 1 else 0.0
+)
+DETECTION_THRESHOLD_SIGMA = 2.0  # must match detection.py's chosen threshold
 
 explanation_cache: dict[str, str] = {}
 
@@ -312,24 +325,173 @@ def _build_explain_html(claim_id: str) -> str:
         provider_total_billed=psum["total_billed"],
     )
 
+    model_name = "claude-sonnet-4-5"
+    max_tokens = 300
+    temperature = 0.3
+
     response = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=300,
-        temperature=0.3,
+        model=model_name,
+        max_tokens=max_tokens,
+        temperature=temperature,
         messages=[{"role": "user", "content": prompt}],
     )
     text = response.content[0].text
 
+    input_tokens = getattr(response.usage, "input_tokens", "?")
+    output_tokens = getattr(response.usage, "output_tokens", "?")
+    stop_reason = getattr(response, "stop_reason", "?")
+
     narrative = (
         '<div class="bg-amber-50 border-l-4 border-amber-400 p-4 my-2 rounded">'
         '<div class="text-xs uppercase tracking-wide text-amber-700 mb-1 font-semibold">AI Fraud Analyst Review</div>'
-        f'<p class="text-gray-800">{text}</p>'
+        f'<p class="text-gray-800">{html_lib.escape(text)}</p>'
         "</div>"
     )
+    rule_receipt = _render_rule_receipt(claim)
+    receipts = _render_receipts(
+        prompt=prompt,
+        raw_response=text,
+        model=model_name,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        stop_reason=stop_reason,
+    )
     profile = _render_provider_profile(claim["provider_id"], claim_id)
-    html = narrative + profile
+    html = narrative + rule_receipt + receipts + profile
     explanation_cache[claim_id] = html
     return html
+
+
+def _render_rule_receipt(claim: dict) -> str:
+    """Expandable card showing the deterministic rule that fired. Not an LLM call."""
+    pid = claim["provider_id"]
+    psum = provider_summary.get(pid, {})
+    rate = psum.get("lens_pct", {}).get("premium_progressive", 0) / 100.0
+    mean = population_premium_mean
+    stdev = population_premium_stdev
+    z = (rate - mean) / stdev if stdev > 0 else 0.0
+    risk = int(round(max(0.0, min(100.0, z * 25.0))))
+    triggered = bool(claim.get("triggered"))
+    triggered_rule = claim.get("triggered_rule") or "—"
+    rule_reason = claim.get("rule_reason") or "—"
+
+    verdict_cls = "text-red-700" if triggered else "text-slate-500"
+    verdict_label = "TRIGGERED" if triggered else "not triggered"
+
+    code_excerpt = '''# detection.py — simplified
+rates = {pid: premium_count[pid] / claim_count[pid] for pid in providers}
+mean  = fmean(rates.values())
+stdev = pstdev(rates.values())
+
+for pid, rate in rates.items():
+    z = (rate - mean) / stdev
+    triggered = z > THRESHOLD          # THRESHOLD = 2.0 σ
+    risk_score = clamp(z * 25, 0, 100) # scale z to 0-100 cap'''
+
+    return f'''
+<div class="my-3">
+  <details class="bg-blue-50 border border-blue-200 rounded group">
+    <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-blue-900 flex items-center justify-between select-none">
+      <span class="flex items-center gap-2">
+        <span class="inline-block w-4 h-4 rounded-full bg-blue-600 text-white text-center text-[10px] leading-4 font-bold">1</span>
+        See the rule that fired for this claim
+        <span class="ml-1 text-[10px] text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded font-normal normal-case">deterministic · no LLM</span>
+      </span>
+      <span class="text-blue-400 text-[10px] group-open:rotate-180 transition-transform">▼</span>
+    </summary>
+    <div class="px-3 pb-3">
+      <div class="text-[11px] text-slate-600 mb-2">Flagging is handled by a statistical rule in <code class="font-mono bg-white px-1 rounded border border-blue-200">detection.py</code> — not a prompt. This keeps the fraud/not-fraud decision auditable.</div>
+
+      <div class="grid grid-cols-2 gap-3 text-xs">
+        <div class="bg-white border border-blue-200 rounded p-3">
+          <div class="text-[10px] uppercase tracking-wider text-blue-700 font-semibold mb-1">Inputs observed</div>
+          <table class="w-full font-mono text-[11px] text-slate-700">
+            <tr><td class="py-0.5 pr-2">provider_id</td><td>{pid}</td></tr>
+            <tr><td class="py-0.5 pr-2">provider_premium_rate</td><td>{rate*100:.0f}%</td></tr>
+            <tr><td class="py-0.5 pr-2">population_mean</td><td>{mean*100:.1f}%</td></tr>
+            <tr><td class="py-0.5 pr-2">population_stdev</td><td>{stdev*100:.1f}pp</td></tr>
+            <tr><td class="py-0.5 pr-2">z_score</td><td class="font-semibold">{z:+.2f}</td></tr>
+            <tr><td class="py-0.5 pr-2">threshold</td><td>{DETECTION_THRESHOLD_SIGMA} σ</td></tr>
+          </table>
+        </div>
+        <div class="bg-white border border-blue-200 rounded p-3">
+          <div class="text-[10px] uppercase tracking-wider text-blue-700 font-semibold mb-1">Output written to claims_scored.json</div>
+          <table class="w-full font-mono text-[11px] text-slate-700">
+            <tr><td class="py-0.5 pr-2">triggered</td><td class="font-semibold {verdict_cls}">{verdict_label}</td></tr>
+            <tr><td class="py-0.5 pr-2">triggered_rule</td><td>{html_lib.escape(str(triggered_rule))}</td></tr>
+            <tr><td class="py-0.5 pr-2">risk_score</td><td class="font-semibold">{risk}/100</td></tr>
+          </table>
+          <div class="mt-2 text-[11px] text-slate-600 leading-relaxed">
+            <span class="font-semibold">rule_reason:</span> {html_lib.escape(str(rule_reason))}
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <div class="text-[10px] uppercase tracking-wider text-blue-700 font-semibold mb-1">Scoring logic (excerpt from detection.py)</div>
+        <pre class="bg-slate-900 text-slate-100 text-[11px] leading-relaxed p-3 rounded overflow-x-auto whitespace-pre">{html_lib.escape(code_excerpt)}</pre>
+      </div>
+    </div>
+  </details>
+</div>
+'''
+
+
+def _render_receipts(
+    prompt: str,
+    raw_response: str,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    input_tokens,
+    output_tokens,
+    stop_reason: str,
+) -> str:
+    """Inline expandable 'show the receipts' sections — exact prompt + raw response."""
+    esc_prompt = html_lib.escape(prompt)
+    esc_response = html_lib.escape(raw_response)
+    return f'''
+<div class="my-3 grid gap-2">
+  <details class="bg-slate-50 border border-slate-200 rounded group">
+    <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-700 flex items-center justify-between select-none">
+      <span class="flex items-center gap-2">
+        <span class="inline-block w-4 h-4 rounded-full bg-slate-500 text-white text-center text-[10px] leading-4 font-bold">2</span>
+        See the exact prompt Claude received
+        <span class="ml-1 text-[10px] text-slate-600 bg-slate-200 px-1.5 py-0.5 rounded font-normal normal-case">LLM input</span>
+      </span>
+      <span class="text-slate-400 text-[10px] group-open:rotate-180 transition-transform">▼</span>
+    </summary>
+    <div class="px-3 pb-3">
+      <div class="text-[11px] text-slate-500 mb-1">Substituted for this specific claim — not the template.</div>
+      <pre class="bg-white border border-slate-200 rounded p-3 text-[11px] leading-relaxed text-slate-800 whitespace-pre-wrap overflow-x-auto">{esc_prompt}</pre>
+    </div>
+  </details>
+
+  <details class="bg-slate-50 border border-slate-200 rounded group">
+    <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-700 flex items-center justify-between select-none">
+      <span class="flex items-center gap-2">
+        <span class="inline-block w-4 h-4 rounded-full bg-slate-500 text-white text-center text-[10px] leading-4 font-bold">3</span>
+        See the raw response from Claude
+        <span class="ml-1 text-[10px] text-slate-600 bg-slate-200 px-1.5 py-0.5 rounded font-normal normal-case">LLM output</span>
+      </span>
+      <span class="text-slate-400 text-[10px] group-open:rotate-180 transition-transform">▼</span>
+    </summary>
+    <div class="px-3 pb-3">
+      <div class="text-[11px] text-slate-500 mb-1 flex flex-wrap gap-x-4 gap-y-1">
+        <span><span class="font-semibold">Model:</span> {html_lib.escape(model)}</span>
+        <span><span class="font-semibold">max_tokens:</span> {max_tokens}</span>
+        <span><span class="font-semibold">temperature:</span> {temperature}</span>
+        <span><span class="font-semibold">input tokens:</span> {input_tokens}</span>
+        <span><span class="font-semibold">output tokens:</span> {output_tokens}</span>
+        <span><span class="font-semibold">stop reason:</span> {html_lib.escape(str(stop_reason))}</span>
+      </div>
+      <pre class="bg-white border border-slate-200 rounded p-3 text-[11px] leading-relaxed text-slate-800 whitespace-pre-wrap overflow-x-auto">{esc_response}</pre>
+    </div>
+  </details>
+</div>
+'''
 
 
 @app.get("/explain/{claim_id}", response_class=HTMLResponse)
