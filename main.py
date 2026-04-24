@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import re
+import threading
 from collections import defaultdict
 from pathlib import Path
 
@@ -106,10 +108,32 @@ PROVIDER CONTEXT:
 - Premium progressive rate: {provider_premium_rate}% (population mean: 15%)
 - Total billed: ${provider_total_billed}
 
-In 2-3 sentences, assess whether this looks like (a) likely fraud,
-(b) possible documentation or coding error, or (c) a false positive
-worth deprioritizing. Cite the specific pattern that drives your
-assessment. Do not speculate beyond the data provided."""
+Output format (exactly):
+  First line: TRIAGE: <one of: likely_fraud | doc_error | false_positive>
+  Then 2-3 sentences of reasoning that cite the specific pattern
+  driving your assessment. Do not speculate beyond the data provided.
+
+Use these category definitions:
+- likely_fraud      intentional upcoding or other clear fraud signal
+- doc_error         miscoding or billing anomaly that warrants manual review but isn't clearly fraud
+- false_positive    flag fired on provider pattern but this specific claim doesn't match the pattern"""
+
+
+TRIAGE_VALUES = ("likely_fraud", "doc_error", "false_positive")
+triage_by_claim: dict[str, str] = {}
+
+
+def _parse_triage(text: str) -> tuple[str, str]:
+    """Return (triage_category, remaining_narrative). Falls back to 'unknown'."""
+    m = re.match(r"^\s*TRIAGE:\s*(\w+)\s*\n?", text)
+    if m and m.group(1) in TRIAGE_VALUES:
+        return m.group(1), text[m.end():].strip()
+    # Fallback: scan first few lines for any keyword match
+    lowered = text[:200].lower()
+    for t in TRIAGE_VALUES:
+        if t.replace("_", " ") in lowered or t in lowered:
+            return t, text
+    return "unknown", text
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -128,6 +152,15 @@ def index(request: Request):
 
     flagged_sorted = sorted(flagged, key=lambda c: c.get("risk_score", 0), reverse=True)
 
+    # Triage summary counts (for a small dashboard status strip)
+    triage_counts = {"likely_fraud": 0, "doc_error": 0, "false_positive": 0, "unknown": 0, "pending": 0}
+    for c in flagged_sorted:
+        t = triage_by_claim.get(c["claim_id"])
+        if t is None:
+            triage_counts["pending"] += 1
+        else:
+            triage_counts[t] = triage_counts.get(t, 0) + 1
+
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -137,6 +170,8 @@ def index(request: Request):
             "dollars_at_risk": dollars_at_risk,
             "detection_rate": detection_rate,
             "flagged_claims": flagged_sorted,
+            "triage_by_claim": triage_by_claim,
+            "triage_counts": triage_counts,
         },
     )
 
@@ -335,18 +370,34 @@ def _build_explain_html(claim_id: str) -> str:
         temperature=temperature,
         messages=[{"role": "user", "content": prompt}],
     )
-    text = response.content[0].text
+    raw_text = response.content[0].text
+    triage, narrative_text = _parse_triage(raw_text)
+    triage_by_claim[claim_id] = triage
 
     input_tokens = getattr(response.usage, "input_tokens", "?")
     output_tokens = getattr(response.usage, "output_tokens", "?")
     stop_reason = getattr(response, "stop_reason", "?")
 
+    triage_labels = {
+        "likely_fraud": ("Likely fraud", "bg-red-100 text-red-800 border-red-300"),
+        "doc_error": ("Doc/coding error", "bg-amber-100 text-amber-800 border-amber-300"),
+        "false_positive": ("False positive", "bg-emerald-100 text-emerald-800 border-emerald-300"),
+        "unknown": ("Unclassified", "bg-slate-100 text-slate-700 border-slate-300"),
+    }
+    t_label, t_cls = triage_labels.get(triage, triage_labels["unknown"])
+    triage_pill = (
+        f'<span class="inline-block px-2 py-0.5 rounded text-xs font-semibold border {t_cls} mb-2">{t_label}</span>'
+    )
+
     narrative = (
         '<div class="bg-amber-50 border-l-4 border-amber-400 p-4 my-2 rounded">'
         '<div class="text-xs uppercase tracking-wide text-amber-700 mb-1 font-semibold">AI Fraud Analyst Review</div>'
-        f'<p class="text-gray-800">{html_lib.escape(text)}</p>'
+        f'{triage_pill}'
+        f'<p class="text-gray-800">{html_lib.escape(narrative_text)}</p>'
         "</div>"
     )
+    # Use the raw (including the TRIAGE line) in the receipts — shows exactly what Claude emitted
+    text = raw_text
     rule_receipt = _render_rule_receipt(claim)
     receipts = _render_receipts(
         prompt=prompt,
@@ -953,3 +1004,29 @@ def product_page():
   </section>
 </main></body></html>'''
     return HTMLResponse(content=body)
+
+
+# -- Background warmup: precompute triage for every flagged claim --------------
+# Runs once at module load, in a daemon thread so startup isn't blocked.
+# Populates `explanation_cache` and `triage_by_claim`. After it completes,
+# dashboard risk badges render in red/amber/green rather than neutral gray.
+
+def _warmup_cache() -> None:
+    flagged_ids = [c["claim_id"] for c in claims.values() if c.get("triggered")]
+    for cid in flagged_ids:
+        if cid in explanation_cache:
+            continue
+        try:
+            _build_explain_html(cid)
+        except Exception as e:
+            print(f"[warmup] skipped {cid[:8]}: {e}")
+    print(f"[warmup] done — {len(triage_by_claim)} claims triaged")
+
+
+def _kick_off_warmup() -> None:
+    t = threading.Thread(target=_warmup_cache, daemon=True, name="triage-warmup")
+    t.start()
+    print(f"[warmup] started for {sum(1 for c in claims.values() if c.get('triggered'))} flagged claims")
+
+
+_kick_off_warmup()
