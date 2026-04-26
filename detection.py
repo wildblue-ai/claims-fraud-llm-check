@@ -131,6 +131,7 @@ def main() -> int:
     t, scored, precision, recall, stats = chosen
 
     # Persist scored claims
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(json.dumps(scored, indent=2))
 
     # Sample 3 triggered claim_ids
@@ -138,6 +139,7 @@ def main() -> int:
 
     # Write report
     report_path = ROOT / "reports" / "phase-2.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"verdict: {verdict}",
         f"recall: {recall:.2f}",

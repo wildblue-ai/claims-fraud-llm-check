@@ -1,15 +1,19 @@
 """Insurance Fraud Detection POC — FastAPI app."""
 from __future__ import annotations
 
+import atexit
+import hashlib
 import html as html_lib
 import json
 import os
 import re
 import statistics as _stats
 import subprocess
+import sys
 import threading
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -22,7 +26,34 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).parent
 DATA_PATH = BASE_DIR / "data" / "claims_scored.json"
+RAW_DATA_PATH = BASE_DIR / "data" / "claims.json"
+CACHE_PATH = BASE_DIR / "data" / "triage_cache.json"
 PROMPTS_DIR = BASE_DIR / "prompts"
+
+
+def _bootstrap_data_if_missing() -> None:
+    """If data/claims_scored.json doesn't exist, run Phase 1 + Phase 2 to produce it.
+    Lets a fresh `git clone` of the repo go straight to `uvicorn main:app --reload`
+    without manually running the build phases first."""
+    if DATA_PATH.exists():
+        return
+    print("[startup] data/claims_scored.json missing — bootstrapping via Phase 1 + Phase 2", flush=True)
+    try:
+        if not RAW_DATA_PATH.exists():
+            subprocess.run(
+                ["python3", "generate_data.py"],
+                check=True, cwd=BASE_DIR, timeout=60,
+            )
+        subprocess.run(
+            ["python3", "detection.py"],
+            check=True, cwd=BASE_DIR, timeout=60,
+        )
+    except Exception as e:
+        print(f"[startup] bootstrap failed: {e}", file=sys.stderr, flush=True)
+        raise
+
+
+_bootstrap_data_if_missing()
 
 LENS_TYPES = ("single", "bifocal", "progressive", "premium_progressive")
 
@@ -119,12 +150,96 @@ def _reload_state() -> None:
             else ""
         )
 
-        # Fresh data invalidates prior triage + explanation cache
+        # Fresh data invalidates prior in-memory triage + explanation cache.
+        # Disk cache is left alone — _load_cache_if_fresh() does its own
+        # fingerprint check, and /reshuffle explicitly invalidates the file.
         explanation_cache.clear()
         triage_by_claim.clear()
 
 
 DETECTION_THRESHOLD_SIGMA = 2.0  # must match detection.py's chosen threshold
+
+# -- Cache persistence ---------------------------------------------------------
+# Survives restarts: triage badges + cached explain HTML reload from disk so a
+# fresh `uvicorn main:app` after a kill comes up demo-ready in <1s instead of
+# triggering a 60-90s warmup with ~$0.25 of API calls.
+
+_PROMPT_VERSION = ""  # filled in below once PROMPT_TEMPLATE is defined
+
+
+def _compute_fingerprint() -> str:
+    """Hash of the data file + the runtime prompt. Either changing invalidates the
+    cache (since either would change what Claude sees / says for a given claim)."""
+    h = hashlib.sha256()
+    if DATA_PATH.exists():
+        h.update(DATA_PATH.read_bytes())
+    h.update(_PROMPT_VERSION.encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _save_cache() -> None:
+    """Persist triage_by_claim + explanation_cache to disk. Called after warmup
+    completes and via atexit() on graceful shutdown."""
+    try:
+        # Take a snapshot under the reload lock so we don't race a regen
+        with _reload_lock:
+            payload = {
+                "fingerprint": _compute_fingerprint(),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "triage_by_claim": dict(triage_by_claim),
+                "explanation_cache": dict(explanation_cache),
+            }
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_PATH.write_text(json.dumps(payload))
+        print(
+            f"[cache] saved {len(payload['triage_by_claim'])} triage + "
+            f"{len(payload['explanation_cache'])} explain entries → {CACHE_PATH.name}",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[cache] save failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
+def _load_cache_if_fresh() -> bool:
+    """Populate triage_by_claim + explanation_cache from disk if fingerprint matches.
+    Returns True iff cache was loaded successfully."""
+    if not CACHE_PATH.exists():
+        return False
+    try:
+        payload = json.loads(CACHE_PATH.read_text())
+        if payload.get("fingerprint") != _compute_fingerprint():
+            print(
+                "[cache] fingerprint mismatch (data or prompt changed) — discarding stale cache",
+                flush=True,
+            )
+            try:
+                CACHE_PATH.unlink()
+            except OSError:
+                pass
+            return False
+        with _reload_lock:
+            triage_by_claim.update(payload.get("triage_by_claim", {}))
+            explanation_cache.update(payload.get("explanation_cache", {}))
+        print(
+            f"[cache] loaded {len(triage_by_claim)} triage + "
+            f"{len(explanation_cache)} explain entries (saved {payload.get('saved_at', 'unknown')})",
+            flush=True,
+        )
+        return True
+    except Exception as e:
+        print(f"[cache] load failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        return False
+
+
+def _invalidate_cache_file() -> None:
+    """Remove the on-disk cache. Called from _reload_state() since reshuffling
+    invalidates the data fingerprint anyway."""
+    try:
+        if CACHE_PATH.exists():
+            CACHE_PATH.unlink()
+    except OSError:
+        pass
+
 
 _reload_state()
 
@@ -168,6 +283,9 @@ Use these category definitions:
 
 TRIAGE_VALUES = ("likely_fraud", "doc_error", "false_positive")
 triage_by_claim: dict[str, str] = {}
+
+# Now that PROMPT_TEMPLATE exists, set the version string used in the cache fingerprint
+_PROMPT_VERSION = PROMPT_TEMPLATE
 
 
 def _parse_triage(text: str) -> tuple[str, str]:
@@ -828,6 +946,7 @@ def reshuffle():
         )
 
     _reload_state()
+    _invalidate_cache_file()  # the on-disk cache is stale once data has been regenerated
     _kick_off_warmup()
 
     new_total = len(claims)
@@ -1427,11 +1546,13 @@ def _warmup_cache() -> None:
     my_generation = _data_generation
     flagged_ids = [c["claim_id"] for c in claims.values() if c.get("triggered")]
     triaged_here = 0
+    aborted = False
     for cid in flagged_ids:
         # Bail if a newer reshuffle has invalidated this generation
         if _data_generation != my_generation:
-            print(f"[warmup gen={my_generation}] aborting — newer generation started")
-            return
+            print(f"[warmup gen={my_generation}] aborting — newer generation started", flush=True)
+            aborted = True
+            break
         # Claim may have disappeared between snapshot and now
         if cid not in claims:
             continue
@@ -1441,14 +1562,36 @@ def _warmup_cache() -> None:
             _build_explain_html(cid)
             triaged_here += 1
         except Exception as e:
-            print(f"[warmup gen={my_generation}] skipped {cid[:8]}: {type(e).__name__}: {e}")
-    print(f"[warmup gen={my_generation}] done — triaged {triaged_here} of {len(flagged_ids)} flagged claims")
+            print(f"[warmup gen={my_generation}] skipped {cid[:8]}: {type(e).__name__}: {e}", flush=True)
+    if not aborted:
+        print(
+            f"[warmup gen={my_generation}] done — triaged {triaged_here} of {len(flagged_ids)} flagged claims",
+            flush=True,
+        )
+        # Persist so the next cold start can come up demo-ready
+        if _data_generation == my_generation:
+            _save_cache()
 
 
 def _kick_off_warmup() -> None:
+    flagged = sum(1 for c in claims.values() if c.get("triggered"))
+    pending = sum(
+        1 for c in claims.values()
+        if c.get("triggered") and c["claim_id"] not in explanation_cache
+    )
+    if pending == 0:
+        print(f"[warmup] all {flagged} flagged claims already cached — skipping", flush=True)
+        return
     t = threading.Thread(target=_warmup_cache, daemon=True, name="triage-warmup")
     t.start()
-    print(f"[warmup] started for {sum(1 for c in claims.values() if c.get('triggered'))} flagged claims")
+    print(f"[warmup] started for {pending} of {flagged} flagged claims (cache hit on {flagged - pending})", flush=True)
 
+
+# Restore caches from disk if data + prompt fingerprints still match. Then warmup
+# only fills the gaps (zero gaps after a clean restart = instant demo readiness).
+_load_cache_if_fresh()
+
+# Save on graceful shutdown so partial warmups aren't lost.
+atexit.register(_save_cache)
 
 _kick_off_warmup()

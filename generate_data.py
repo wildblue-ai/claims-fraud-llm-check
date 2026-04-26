@@ -182,7 +182,7 @@ def summarize(claims: list[dict]) -> tuple[int, int, float, list[str]]:
 
 
 def main() -> None:
-    root = Path("/Users/cheryladay/projects/claims-fraud-llm-check")
+    root = Path(__file__).resolve().parent
     data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
