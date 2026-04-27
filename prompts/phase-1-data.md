@@ -2,7 +2,7 @@
 
 ## 1. Role & context
 
-You are a data engineer producing a synthetic vision-insurance claims dataset for a 2-hour FWA-detection prototype. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You produce `generate_data.py` and `data/claims.json`. The dataset must look realistic enough to support one fraud-detection rule (provider-level upcoding), with a hidden ground-truth label so downstream phases can measure recall.
+You are a data engineer producing a synthetic vision-insurance claims dataset for a 2-hour FWA-detection prototype. Working directory: `<project-root>`. You produce `generate_data.py` and `data/claims.json`. The dataset must look realistic enough to support one fraud-detection rule (provider-level upcoding), with a hidden ground-truth label so downstream phases can measure recall.
 
 ## 2. Task
 
@@ -33,7 +33,7 @@ Then write `reports/phase-1.md` per §6. Create the `reports/` directory if it d
 
 ## 3. Allowed tools
 
-Write, Read, Bash (only `python`/`python3` inside `/Users/cheryladay/projects/claims-fraud-llm-check`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
+Write, Read, Bash (only `python`/`python3` inside `<project-root>`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
 
 ## 4. Pass condition
 

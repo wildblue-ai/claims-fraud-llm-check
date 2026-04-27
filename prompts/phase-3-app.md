@@ -2,7 +2,7 @@
 
 ## 1. Role & context
 
-You are a senior Python engineer finishing a 2-hour prototype. Phase 2 has completed — `data/claims_scored.json` exists with fraud-scored claims. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You produce the FastAPI app: `main.py`, `templates/index.html`, `README.md`, and `requirements.txt`.
+You are a senior Python engineer finishing a 2-hour prototype. Phase 2 has completed — `data/claims_scored.json` exists with fraud-scored claims. Working directory: `<project-root>`. You produce the FastAPI app: `main.py`, `templates/index.html`, `README.md`, and `requirements.txt`.
 
 This is the final build phase. **No retries** — if a pass check fails, write a diagnosis and stop.
 
@@ -168,7 +168,7 @@ Include in this order:
 
 ## 3. Allowed tools
 
-Write, Read, Bash (`python`/`python3`/`uvicorn`/`curl`/`kill`/`lsof` inside `/Users/cheryladay/projects/claims-fraud-llm-check`). The Anthropic SDK may reach the internet via the Bash verification step. Do not edit `prompts/`, `docs/`, or `CLAUDE.md`.
+Write, Read, Bash (`python`/`python3`/`uvicorn`/`curl`/`kill`/`lsof` inside `<project-root>`). The Anthropic SDK may reach the internet via the Bash verification step. Do not edit `prompts/`, `docs/`, or `CLAUDE.md`.
 
 ## 4. Pass condition
 

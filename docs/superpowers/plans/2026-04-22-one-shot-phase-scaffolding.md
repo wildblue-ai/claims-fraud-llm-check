@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Produce the three build-phase prompt files and the `.env.example` template so the Insurance Fraud POC can be built via per-phase subagent dispatch per the design spec.
+**Goal:** Produce the three build-phase prompt files and the `.env.example` template so the Insurance Fraud Detection POC can be built via per-phase subagent dispatch per the design spec.
 
 **Architecture:** This plan creates scaffolding only — no project code. Each prompt file is a self-contained brief for a Task subagent that will later produce one phase of the POC (data, detection, app). The prompts are the artifacts the orchestrator dispatches; the subagents produce `generate_data.py`, `detection.py`, `main.py`, etc.
 
@@ -38,11 +38,11 @@ Each prompt file is **self-contained** — it inlines the slice of the brief its
 ANTHROPIC_API_KEY=sk-ant-placeholder-replace-with-your-key
 ```
 
-Use the Write tool to create `/Users/cheryladay/projects/claims-fraud-llm-check/.env.example` with exactly that one line.
+Use the Write tool to create `<project-root>/.env.example` with exactly that one line.
 
 - [ ] **Step 2: Verify**
 
-Run: `cat /Users/cheryladay/projects/claims-fraud-llm-check/.env.example`
+Run: `cat <project-root>/.env.example`
 Expected: the single `ANTHROPIC_API_KEY=sk-ant-placeholder-replace-with-your-key` line.
 
 ---
@@ -54,14 +54,14 @@ Expected: the single `ANTHROPIC_API_KEY=sk-ant-placeholder-replace-with-your-key
 
 - [ ] **Step 1: Write the file**
 
-Use the Write tool to create `/Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-1-data.md` with the following exact content:
+Use the Write tool to create `<project-root>/prompts/phase-1-data.md` with the following exact content:
 
 ````markdown
 # Phase 1 — Data generation
 
 ## 1. Role & context
 
-You are a data engineer producing a synthetic vision-insurance claims dataset for a 2-hour FWA-detection prototype. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You produce `generate_data.py` and `data/claims.json`. The dataset must look realistic enough to support one fraud-detection rule (provider-level upcoding), with a hidden ground-truth label so downstream phases can measure recall.
+You are a data engineer producing a synthetic vision-insurance claims dataset for a 2-hour FWA-detection prototype. Working directory: `<project-root>`. You produce `generate_data.py` and `data/claims.json`. The dataset must look realistic enough to support one fraud-detection rule (provider-level upcoding), with a hidden ground-truth label so downstream phases can measure recall.
 
 ## 2. Task
 
@@ -92,7 +92,7 @@ Then write `reports/phase-1.md` per §6. Create the `reports/` directory if it d
 
 ## 3. Allowed tools
 
-Write, Read, Bash (only `python`/`python3` inside `/Users/cheryladay/projects/claims-fraud-llm-check`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
+Write, Read, Bash (only `python`/`python3` inside `<project-root>`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
 
 ## 4. Pass condition
 
@@ -136,7 +136,7 @@ Return a one-line summary as your final message, e.g., `"Phase 1 PASS: 18 fraud 
 
 - [ ] **Step 2: Verify**
 
-Run: `wc -l /Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-1-data.md && head -3 /Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-1-data.md`
+Run: `wc -l <project-root>/prompts/phase-1-data.md && head -3 <project-root>/prompts/phase-1-data.md`
 Expected: >60 lines, starts with `# Phase 1 — Data generation`.
 
 ---
@@ -148,14 +148,14 @@ Expected: >60 lines, starts with `# Phase 1 — Data generation`.
 
 - [ ] **Step 1: Write the file**
 
-Use the Write tool to create `/Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-2-detect.md` with the following exact content:
+Use the Write tool to create `<project-root>/prompts/phase-2-detect.md` with the following exact content:
 
 ````markdown
 # Phase 2 — Detection
 
 ## 1. Role & context
 
-You are a data engineer implementing a provider-level upcoding detector for a synthetic vision-claims dataset. Phase 1 has already run — `data/claims.json` exists with 500 claims including a hidden `is_fraud` label. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You write `detection.py`, run it, and produce `data/claims_scored.json`.
+You are a data engineer implementing a provider-level upcoding detector for a synthetic vision-claims dataset. Phase 1 has already run — `data/claims.json` exists with 500 claims including a hidden `is_fraud` label. Working directory: `<project-root>`. You write `detection.py`, run it, and produce `data/claims_scored.json`.
 
 ## 2. Task
 
@@ -176,7 +176,7 @@ Write `detection.py` using Python 3.11+ standard library only. It must:
 
 ## 3. Allowed tools
 
-Write, Read, Bash (only `python`/`python3` inside `/Users/cheryladay/projects/claims-fraud-llm-check`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
+Write, Read, Bash (only `python`/`python3` inside `<project-root>`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
 
 ## 4. Pass condition
 
@@ -212,7 +212,7 @@ Return a one-line summary as your final message, e.g., `"Phase 2 PASS: recall=0.
 
 - [ ] **Step 2: Verify**
 
-Run: `wc -l /Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-2-detect.md && head -3 /Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-2-detect.md`
+Run: `wc -l <project-root>/prompts/phase-2-detect.md && head -3 <project-root>/prompts/phase-2-detect.md`
 Expected: >50 lines, starts with `# Phase 2 — Detection`.
 
 ---
@@ -224,14 +224,14 @@ Expected: >50 lines, starts with `# Phase 2 — Detection`.
 
 - [ ] **Step 1: Write the file**
 
-Use the Write tool to create `/Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-3-app.md` with the following exact content:
+Use the Write tool to create `<project-root>/prompts/phase-3-app.md` with the following exact content:
 
 ````markdown
 # Phase 3 — App (halt-and-escalate)
 
 ## 1. Role & context
 
-You are a senior Python engineer finishing a 2-hour prototype. Phase 2 has completed — `data/claims_scored.json` exists with fraud-scored claims. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You produce the FastAPI app: `main.py`, `templates/index.html`, `README.md`, and `requirements.txt`.
+You are a senior Python engineer finishing a 2-hour prototype. Phase 2 has completed — `data/claims_scored.json` exists with fraud-scored claims. Working directory: `<project-root>`. You produce the FastAPI app: `main.py`, `templates/index.html`, `README.md`, and `requirements.txt`.
 
 This is the final build phase. **No retries** — if a pass check fails, write a diagnosis and stop.
 
@@ -397,7 +397,7 @@ Include in this order:
 
 ## 3. Allowed tools
 
-Write, Read, Bash (`python`/`python3`/`uvicorn`/`curl`/`kill`/`lsof` inside `/Users/cheryladay/projects/claims-fraud-llm-check`). The Anthropic SDK may reach the internet via the Bash verification step. Do not edit `prompts/`, `docs/`, or `CLAUDE.md`.
+Write, Read, Bash (`python`/`python3`/`uvicorn`/`curl`/`kill`/`lsof` inside `<project-root>`). The Anthropic SDK may reach the internet via the Bash verification step. Do not edit `prompts/`, `docs/`, or `CLAUDE.md`.
 
 ## 4. Pass condition
 
@@ -439,7 +439,7 @@ Return a one-line summary as your final message, e.g., `"Phase 3 PASS: all 6 che
 
 - [ ] **Step 2: Verify**
 
-Run: `wc -l /Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-3-app.md && head -3 /Users/cheryladay/projects/claims-fraud-llm-check/prompts/phase-3-app.md`
+Run: `wc -l <project-root>/prompts/phase-3-app.md && head -3 <project-root>/prompts/phase-3-app.md`
 Expected: >150 lines, starts with `# Phase 3 — App (halt-and-escalate)`.
 
 ---

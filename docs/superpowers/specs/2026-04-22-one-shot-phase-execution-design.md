@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-22
 **Project:** Insurance Fraud Detection POC (2-hour prototype)
-**Source brief:** [`../../../Claude Code Brief.md`](../../../Claude%20Code%20Brief.md)
+**Source brief:** [`../../../Claude Code Brief.md`](../../../Claude%20Code%20Brief.md) (original filename retained as historical record)
 
 ## Context
 
@@ -24,7 +24,7 @@ The brief defines three phases (data, detection, app) with manual human checkpoi
 ## Architecture
 
 ```
-claims-fraud-llm-check/
+<project-root>/
 ├── CLAUDE.md                             # pointer to brief + hard rules
 ├── Claude Code Brief: ....md             # source of truth
 ├── prompts/
@@ -59,7 +59,7 @@ Three files must exist in the project root before Phase 1 runs. These are one-ti
 - `.env.example` — template with `ANTHROPIC_API_KEY=` placeholder. Committed.
 - `.env` — real key, user-provided locally. Never committed.
 
-If `claims-fraud-llm-check/` is not yet a git repository, bootstrap also includes `git init`. The orchestrator handles bootstrap in its first working turn, not via subagent.
+If `<project-root>/` is not yet a git repository, bootstrap also includes `git init`. The orchestrator handles bootstrap in its first working turn, not via subagent.
 
 ## Per-phase prompt skeleton
 
@@ -183,7 +183,7 @@ None at spec-approval time. `git init` is folded into bootstrap above.
 
 **1. Role & context**
 
-You are a data engineer producing a synthetic vision-insurance claims dataset for a 2-hour FWA-detection prototype. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You produce `generate_data.py` and `data/claims.json`. The dataset must look realistic enough to support one fraud detection rule (provider-level upcoding), with a hidden ground-truth label for downstream measurement.
+You are a data engineer producing a synthetic vision-insurance claims dataset for a 2-hour FWA-detection prototype. Working directory: `<project-root>`. You produce `generate_data.py` and `data/claims.json`. The dataset must look realistic enough to support one fraud detection rule (provider-level upcoding), with a hidden ground-truth label for downstream measurement.
 
 **2. Task**
 
@@ -251,7 +251,7 @@ diagnosis: (FAIL only) <what was tried, why it didn't converge>
 
 **1. Role & context**
 
-You are a data engineer implementing a provider-level upcoding detector for a synthetic vision-claims dataset. Phase 1 has run — `data/claims.json` exists with 500 claims including a hidden `is_fraud` label. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You write `detection.py`, run it, and produce `data/claims_scored.json`.
+You are a data engineer implementing a provider-level upcoding detector for a synthetic vision-claims dataset. Phase 1 has run — `data/claims.json` exists with 500 claims including a hidden `is_fraud` label. Working directory: `<project-root>`. You write `detection.py`, run it, and produce `data/claims_scored.json`.
 
 **2. Task**
 

@@ -2,7 +2,7 @@
 
 ## 1. Role & context
 
-You are a data engineer implementing a provider-level upcoding detector for a synthetic vision-claims dataset. Phase 1 has already run — `data/claims.json` exists with 500 claims including a hidden `is_fraud` label. Working directory: `/Users/cheryladay/projects/claims-fraud-llm-check`. You write `detection.py`, run it, and produce `data/claims_scored.json`.
+You are a data engineer implementing a provider-level upcoding detector for a synthetic vision-claims dataset. Phase 1 has already run — `data/claims.json` exists with 500 claims including a hidden `is_fraud` label. Working directory: `<project-root>`. You write `detection.py`, run it, and produce `data/claims_scored.json`.
 
 ## 2. Task
 
@@ -23,7 +23,7 @@ Write `detection.py` using Python 3.11+ standard library only. It must:
 
 ## 3. Allowed tools
 
-Write, Read, Bash (only `python`/`python3` inside `/Users/cheryladay/projects/claims-fraud-llm-check`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
+Write, Read, Bash (only `python`/`python3` inside `<project-root>`). No Task, no internet. Do not edit anything in `prompts/`, `docs/`, or `CLAUDE.md`.
 
 ## 4. Pass condition
 
