@@ -35,7 +35,7 @@ The current rule set catches one fraud archetype (upcoding premium lens types an
 - **Provider rings** - collusion networks billing similar unusual patterns across shared members.
 - **Phantom add-ons** - lens coatings, UV, anti-reflective that were billed but never documented in the exam record.
 - **Temporal drift** - fraudsters adapt; models need scheduled retraining and out-of-distribution monitoring.
-- **Real data** - this needs to be validated against actual actual claims, plus held-out fraud cases the model has never seen, to measure true generalization.
+- **Real data** - this needs to be validated against actual production claims, plus held-out fraud cases the model has never seen, to measure true generalization.
 
 ## Caveat
 

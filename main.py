@@ -1752,7 +1752,7 @@ def product_page():
   <section class="mt-6 bg-[#003b71] text-white rounded-lg p-6 shadow">
     <div class="text-xs uppercase tracking-widest text-teal-200 font-semibold">The product claim</div>
     <p class="mt-2 text-lg leading-relaxed">
-      A vision-insurance fraud team reviews ~50 flags per investigator per day. Each triage takes 10–15 minutes of reading provider history, member history, and coding patterns to decide <em>fraud / documentation error / false positive</em>. An LLM narrative front-loaded onto every flag cuts that first-pass triage to ~2 minutes and concentrates human time on the ambiguous cases.
+      A vision-insurance fraud team typically reviews ~50 flags per investigator per day. Each triage takes 10–15 minutes of reading provider history, member history, and coding patterns to decide <em>fraud / documentation error / false positive</em>. An LLM narrative front-loaded onto every flag cuts that first-pass triage to ~2 minutes and concentrates human time on the ambiguous cases.
     </p>
     <p class="mt-3 text-sm text-teal-100">
       The detection rule is not the product. The <strong>reviewer workflow</strong> is.

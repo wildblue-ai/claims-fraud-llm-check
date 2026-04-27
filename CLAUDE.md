@@ -1,6 +1,6 @@
 # Insurance Fraud Detection — POC
 
-2-hour prototype for a Springboard.ai job application. FastAPI app demonstrating fraud/waste/abuse detection on synthetic vision insurance claims, with a Claude-powered narrative layer for flagged claims.
+2-hour prototype for a Springboard.ai job application. FastAPI app demonstrating fraud/waste/abuse detection on synthetic vision-insurance claims, with a Claude-powered narrative layer for flagged claims.
 
 **Source of truth for the build:** [`Claude Code Brief.md`](./Claude%20Code%20Brief.md) — read it in full before making scope or design decisions.
 
