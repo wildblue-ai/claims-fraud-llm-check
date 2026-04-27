@@ -5,6 +5,7 @@ import atexit
 import hashlib
 import html as html_lib
 import json
+import math
 import os
 import re
 import statistics as _stats
@@ -63,6 +64,8 @@ provider_summary: dict[str, dict] = {}
 population_lens_pct: dict[str, float] = {}
 population_premium_mean: float = 0.0
 population_premium_stdev: float = 0.0
+fraud_probability_by_provider: dict[str, float] = {}  # P(fraudster | premium_rate), leave-one-out logistic
+binomial_pvalue_by_provider: dict[str, float] = {}  # one-sided test against population mean
 explanation_cache: dict[str, str] = {}
 triage_by_claim: dict[str, str] = {}
 _CLEAN_PROVIDER_ID: str = ""
@@ -71,10 +74,108 @@ _reload_lock = threading.Lock()
 _data_generation: int = 0  # bumped by _reload_state(); stale warmup threads exit when this changes
 
 
+def _sigmoid(z: float) -> float:
+    z = max(min(z, 30.0), -30.0)
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def _fit_logistic_1d(xs: list[float], ys: list[int], lr: float = 0.5, n_iter: int = 3000) -> tuple[float, float]:
+    """Fit P(y=1) = sigmoid(a*x + b). Returns (a, b). Hand-rolled gradient descent
+    so we don't pull in sklearn for one feature."""
+    n = len(xs)
+    if n == 0:
+        return 0.0, 0.0
+    # Degenerate case: all one class -> intercept toward that class
+    if all(y == 0 for y in ys):
+        return 0.0, -8.0
+    if all(y == 1 for y in ys):
+        return 0.0, 8.0
+    a, b = 0.0, 0.0
+    for _ in range(n_iter):
+        ga = 0.0
+        gb = 0.0
+        for x, y in zip(xs, ys):
+            p = _sigmoid(a * x + b)
+            err = p - y
+            ga += err * x
+            gb += err
+        a -= lr * ga / n
+        b -= lr * gb / n
+    return a, b
+
+
+def _binomial_p_value_one_sided(k: int, n: int, p0: float) -> float:
+    """P(X >= k | X ~ Binomial(n, p0)). Closed-form for small n."""
+    if n <= 0:
+        return 1.0
+    if k <= 0:
+        return 1.0
+    if k > n:
+        return 0.0
+    if p0 <= 0:
+        return 0.0 if k > 0 else 1.0
+    if p0 >= 1:
+        return 1.0
+    log_pmf = []
+    log_p = math.log(p0)
+    log_q = math.log(1.0 - p0)
+    log_n_fact = math.lgamma(n + 1)
+    for x in range(k, n + 1):
+        log_term = (
+            log_n_fact - math.lgamma(x + 1) - math.lgamma(n - x + 1)
+            + x * log_p + (n - x) * log_q
+        )
+        log_pmf.append(log_term)
+    if not log_pmf:
+        return 0.0
+    m = max(log_pmf)
+    return math.exp(m) * sum(math.exp(t - m) for t in log_pmf)
+
+
+def _compute_fraud_probabilities(
+    psum: dict[str, dict], claims_list: list[dict], pop_mean: float
+) -> tuple[dict[str, float], dict[str, float]]:
+    """For each provider, return:
+      P(fraudster | observed premium_progressive rate) — leave-one-out logistic
+      one-sided binomial p-value against population mean
+
+    Logistic uses leave-one-out cross-validation so a provider's predicted
+    probability isn't fit on its own label (the only honest way to do this with
+    only 30 providers).
+    """
+    pids = list(psum.keys())
+    if not pids:
+        return {}, {}
+
+    is_fraudster: dict[str, bool] = {}
+    for c in claims_list:
+        if c.get("is_fraud"):
+            is_fraudster[c["provider_id"]] = True
+
+    rates = [psum[p]["lens_pct"]["premium_progressive"] / 100.0 for p in pids]
+    labels = [1 if is_fraudster.get(p) else 0 for p in pids]
+
+    fraud_p: dict[str, float] = {}
+    for i, pid in enumerate(pids):
+        xs = rates[:i] + rates[i + 1:]
+        ys = labels[:i] + labels[i + 1:]
+        a, b = _fit_logistic_1d(xs, ys)
+        fraud_p[pid] = _sigmoid(a * rates[i] + b)
+
+    pvals: dict[str, float] = {}
+    for pid in pids:
+        s = psum[pid]
+        n = s["claim_count"]
+        k = s["lens_counts"]["premium_progressive"]
+        pvals[pid] = _binomial_p_value_one_sided(k, n, pop_mean)
+    return fraud_p, pvals
+
+
 def _reload_state() -> None:
     """(Re)load claims + recompute all derived state. Safe to call repeatedly."""
     global claims, provider_summary, population_lens_pct
     global population_premium_mean, population_premium_stdev
+    global fraud_probability_by_provider, binomial_pvalue_by_provider
     global _CLEAN_PROVIDER_ID, _FRAUDSTER_PROVIDER_ID
     global _data_generation
 
@@ -150,6 +251,14 @@ def _reload_state() -> None:
             else ""
         )
 
+        # Calibrated P(fraudster) per provider via leave-one-out logistic
+        # regression on premium_progressive rate. Plus a one-sided binomial
+        # p-value against population mean for the classical "is this rate
+        # significantly different" question.
+        fp, pvals = _compute_fraud_probabilities(provider_summary, claims_list, population_premium_mean)
+        fraud_probability_by_provider = fp
+        binomial_pvalue_by_provider = pvals
+
         # Fresh data invalidates prior in-memory triage + explanation cache.
         # Disk cache is left alone — _load_cache_if_fresh() does its own
         # fingerprint check, and /reshuffle explicitly invalidates the file.
@@ -165,15 +274,17 @@ DETECTION_THRESHOLD_SIGMA = 2.0  # must match detection.py's chosen threshold
 # triggering a 60-90s warmup with ~$0.25 of API calls.
 
 _PROMPT_VERSION = ""  # filled in below once PROMPT_TEMPLATE is defined
+_RENDER_VERSION = "v3-calibrated-probabilities"  # bump when explain/rule-receipt HTML changes
 
 
 def _compute_fingerprint() -> str:
-    """Hash of the data file + the runtime prompt. Either changing invalidates the
-    cache (since either would change what Claude sees / says for a given claim)."""
+    """Hash of the data file + the runtime prompt + render version. Any of these
+    changing invalidates the cached explain HTML."""
     h = hashlib.sha256()
     if DATA_PATH.exists():
         h.update(DATA_PATH.read_bytes())
     h.update(_PROMPT_VERSION.encode("utf-8"))
+    h.update(_RENDER_VERSION.encode("utf-8"))
     return h.hexdigest()[:16]
 
 
@@ -337,6 +448,7 @@ def index(request: Request):
             "flagged_claims": flagged_sorted,
             "triage_by_claim": triage_by_claim,
             "triage_counts": triage_counts,
+            "fraud_probability_by_provider": fraud_probability_by_provider,
         },
     )
 
@@ -593,6 +705,9 @@ def _render_rule_receipt(claim: dict) -> str:
     triggered_rule = claim.get("triggered_rule") or "—"
     rule_reason = claim.get("rule_reason") or "—"
 
+    fraud_p = fraud_probability_by_provider.get(pid, 0.0)
+    p_val = binomial_pvalue_by_provider.get(pid, 1.0)
+
     verdict_cls = "text-red-700" if triggered else "text-slate-500"
     verdict_label = "TRIGGERED" if triggered else "not triggered"
 
@@ -642,6 +757,25 @@ for pid, rate in rates.items():
           <div class="mt-2 text-[11px] text-slate-600 leading-relaxed">
             <span class="font-semibold">rule_reason:</span> {html_lib.escape(str(rule_reason))}
           </div>
+        </div>
+      </div>
+
+      <div class="mt-3 bg-purple-50 border border-purple-200 rounded p-3 text-xs">
+        <div class="text-[10px] uppercase tracking-wider text-purple-700 font-semibold mb-1.5">Calibrated probabilities</div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="font-mono text-[11px] text-slate-600">P(fraudster | premium_rate)</div>
+            <div class="text-2xl font-semibold text-purple-900 mt-0.5">{fraud_p*100:.0f}%</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">leave-one-out logistic regression on observed rates vs is_fraud labels (n={len(provider_summary)} providers)</div>
+          </div>
+          <div>
+            <div class="font-mono text-[11px] text-slate-600">Binomial p-value (one-sided)</div>
+            <div class="text-2xl font-semibold text-purple-900 mt-0.5">{p_val:.2e}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">P(observe ≥ {psum.get("lens_counts", {}).get("premium_progressive", 0)} of {psum.get("claim_count", 0)} premium progressive | provider behaves like population)</div>
+          </div>
+        </div>
+        <div class="mt-2 text-[11px] text-amber-800 bg-amber-50 border-l-2 border-amber-400 px-2 py-1 rounded">
+          <span class="font-semibold">Caveat:</span> the logistic is calibrated against the synthetic ground-truth labels in this dataset. Production calibration would require a held-out set of historically recovered claims, not the same labels used to train.
         </div>
       </div>
 
@@ -957,6 +1091,8 @@ def claims_page(filter: str = "all", reveal: int = 0):
         else:
             row_cls = "hover:bg-slate-50"
 
+        fp = fraud_probability_by_provider.get(c["provider_id"], 0.0)
+
         # Risk badge
         if triggered:
             badge_cls = triage_color.get(triage, triage_color["unknown"]) if triage else "bg-slate-50 text-slate-400 border-slate-200 animate-pulse"
@@ -969,10 +1105,16 @@ def claims_page(filter: str = "all", reveal: int = 0):
                 f'<div class="inline-flex flex-col items-start gap-0.5">'
                 f'<span class="inline-block px-2 py-0.5 rounded border font-semibold text-sm {badge_cls}">{risk}</span>'
                 f'<span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{badge_label}</span>'
+                f'<span class="text-[10px] text-purple-700 font-mono" title="Calibrated P(fraudster) from leave-one-out logistic">P={fp*100:.0f}%</span>'
                 f"</div>"
             )
         else:
-            risk_badge = f'<span class="text-slate-300 text-xs font-mono">{risk}</span>'
+            risk_badge = (
+                f'<div class="inline-flex flex-col items-start gap-0.5">'
+                f'<span class="text-slate-300 text-xs font-mono">{risk}</span>'
+                f'<span class="text-[10px] text-slate-400 font-mono" title="Calibrated P(fraudster)">P={fp*100:.0f}%</span>'
+                f"</div>"
+            )
 
         # Lens type chip
         lens = c.get("lens_type", "")
@@ -1718,6 +1860,33 @@ def product_page():
       <li><strong>Second fraud pattern</strong> — phantom add-ons or frequency abuse — to prove the three-panel frame generalizes.</li>
       <li><strong>Chart-note review.</strong> The biggest LLM unlock — extending the same pattern to document-heavy cases.</li>
     </ul>
+  </section>
+
+  <section class="mt-10">
+    <h3 class="text-xl font-semibold text-slate-800">Statistical methodology</h3>
+    <p class="mt-2 text-slate-700 leading-relaxed">
+      Three different statistical questions answered three different ways. They're not interchangeable.
+    </p>
+    <div class="mt-4 grid grid-cols-3 gap-3">
+      <div class="bg-white rounded-lg shadow p-4 border-t-4 border-blue-600">
+        <div class="text-xs uppercase tracking-wider text-blue-700 font-semibold">Detection (the gate)</div>
+        <div class="font-semibold text-slate-800 mt-1">z-score &gt; 2σ</div>
+        <p class="text-xs text-slate-600 mt-2 leading-relaxed">Provider's premium-progressive rate vs population mean. Deterministic, auditable, no labels needed. Fires the flag.</p>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4 border-t-4 border-purple-600">
+        <div class="text-xs uppercase tracking-wider text-purple-700 font-semibold">Calibrated probability</div>
+        <div class="font-semibold text-slate-800 mt-1">Logistic regression, leave-one-out</div>
+        <p class="text-xs text-slate-600 mt-2 leading-relaxed">P(fraudster | rate). Fitted against ground-truth labels with leave-one-out CV so a provider's prediction isn't trained on its own label. Visible in every rule receipt.</p>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4 border-t-4 border-emerald-600">
+        <div class="text-xs uppercase tracking-wider text-emerald-700 font-semibold">Significance test</div>
+        <div class="font-semibold text-slate-800 mt-1">Binomial, one-sided</div>
+        <p class="text-xs text-slate-600 mt-2 leading-relaxed">P(observe ≥ k of n premium-progressive | provider behaves like population). Answers "is this rate statistically different" not "is this fraud" — different question, classical p-value.</p>
+      </div>
+    </div>
+    <div class="mt-4 bg-amber-50 border-l-4 border-amber-400 p-4 rounded text-sm text-amber-900">
+      <strong>The probability you should not trust:</strong> the calibration is fit against the same synthetic labels you can reveal on <a href="/claims?reveal=1" class="underline">/claims</a>. With ~30 providers and ~3 fraudsters, leave-one-out is the only honest framing, but the small-sample variance is real. Production calibration would require a held-out set of historically recovered fraud claims.
+    </div>
   </section>
 
   <section class="mt-10 mb-10 bg-slate-900 text-slate-100 rounded-lg p-6">
