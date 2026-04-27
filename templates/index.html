@@ -13,6 +13,7 @@
     </div>
     <nav class="max-w-7xl mx-auto px-6 pb-3 flex gap-5 text-sm flex-wrap">
       <a href="/" class="text-white border-b-2 border-teal-300 pb-1 font-medium">Dashboard</a>
+      <a href="/claims" class="text-teal-100 hover:text-white pb-1">All Claims</a>
       <a href="/demo" class="text-teal-100 hover:text-white pb-1">Guided Demo</a>
       <a href="/try" class="text-teal-100 hover:text-white pb-1">Try a claim</a>
       <a href="/product" class="text-teal-100 hover:text-white pb-1">Product</a>
@@ -63,6 +64,7 @@
             <span class="w-2 h-2 rounded-full bg-slate-400"></span>{{ triage_counts['pending'] }} pending
           </span>
           {% endif %}
+          <a href="/claims" class="ml-2 text-blue-700 hover:text-blue-900 font-medium">View all claims →</a>
           <a href="/demo" class="ml-2 text-blue-700 hover:text-blue-900 font-medium">See guided demo →</a>
           <button class="ml-2 px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs"
                   hx-post="/reshuffle"

@@ -721,6 +721,7 @@ def _shared_header(active: str = "") -> str:
     """Compact header for the detail + framing pages."""
     links = [
         ("dashboard", "/", "Dashboard"),
+        ("data", "/claims", "All Claims"),
         ("demo", "/demo", "Guided Demo"),
         ("try", "/try", "Try a claim"),
         ("product", "/product", "Product"),
@@ -908,6 +909,201 @@ def prompts_page(request: Request):
 @app.get("/flow", response_class=HTMLResponse)
 def flow_page(request: Request):
     return templates.TemplateResponse(request, "flow.html", {})
+
+
+@app.get("/claims", response_class=HTMLResponse)
+def claims_page(filter: str = "all", reveal: int = 0):
+    """Full dataset view: all 500 claims with optional filter chips.
+    `filter` ∈ {"all", "flagged", "clean"}; `reveal=1` exposes the hidden
+    is_fraud ground-truth column."""
+    all_claims = list(claims.values())
+    total = len(all_claims)
+    flagged_total = sum(1 for c in all_claims if c.get("triggered"))
+    clean_total = total - flagged_total
+    fraud_total = sum(1 for c in all_claims if c.get("is_fraud"))
+
+    if filter == "flagged":
+        rows = [c for c in all_claims if c.get("triggered")]
+    elif filter == "clean":
+        rows = [c for c in all_claims if not c.get("triggered")]
+    else:
+        rows = all_claims
+        filter = "all"
+
+    rows.sort(
+        key=lambda c: (
+            -1 if c.get("triggered") else 0,  # flagged first
+            -(c.get("risk_score") or 0),
+            c.get("service_date", ""),
+        )
+    )
+
+    triage_color = {
+        "likely_fraud": "bg-red-100 text-red-800 border-red-300",
+        "doc_error": "bg-amber-100 text-amber-800 border-amber-300",
+        "false_positive": "bg-emerald-100 text-emerald-800 border-emerald-300",
+        "unknown": "bg-slate-100 text-slate-700 border-slate-300",
+    }
+
+    table_rows = []
+    for c in rows:
+        cid = c["claim_id"]
+        triggered = c.get("triggered", False)
+        triage = triage_by_claim.get(cid)
+        risk = int(round(c.get("risk_score", 0) or 0))
+
+        if triggered:
+            row_cls = "hover:bg-amber-50 cursor-pointer"
+        else:
+            row_cls = "hover:bg-slate-50"
+
+        # Risk badge
+        if triggered:
+            badge_cls = triage_color.get(triage, triage_color["unknown"]) if triage else "bg-slate-50 text-slate-400 border-slate-200 animate-pulse"
+            badge_label = (
+                {"likely_fraud": "Likely fraud", "doc_error": "Doc error",
+                 "false_positive": "False positive", "unknown": "Unclassified"}.get(triage, "AI pending…")
+                if triage else "AI pending…"
+            )
+            risk_badge = (
+                f'<div class="inline-flex flex-col items-start gap-0.5">'
+                f'<span class="inline-block px-2 py-0.5 rounded border font-semibold text-sm {badge_cls}">{risk}</span>'
+                f'<span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{badge_label}</span>'
+                f"</div>"
+            )
+        else:
+            risk_badge = f'<span class="text-slate-300 text-xs font-mono">{risk}</span>'
+
+        # Lens type chip
+        lens = c.get("lens_type", "")
+        lens_bg, _ = LENS_COLORS.get(lens, ("bg-slate-300", ""))
+        lens_chip = (
+            f'<span class="inline-block px-1.5 py-0.5 rounded text-white text-[11px] font-medium {lens_bg}">{lens}</span>'
+        )
+
+        # Status column
+        if triggered:
+            status = '<span class="inline-block px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-semibold">FLAGGED</span>'
+        else:
+            status = '<span class="text-slate-300 text-[10px]">—</span>'
+
+        # Optional ground-truth column
+        gt = ""
+        if reveal:
+            if c.get("is_fraud"):
+                gt = '<td class="px-3 py-2 text-center"><span class="inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[10px] font-semibold">SEEDED FRAUD</span></td>'
+            else:
+                gt = '<td class="px-3 py-2 text-center"><span class="text-slate-300 text-[10px]">—</span></td>'
+
+        # Click handler — flagged rows expand inline; clean rows are static
+        if triggered:
+            click_attrs = (
+                f'hx-get="/explain/{cid}" hx-target="#claims-detail-{cid}" '
+                f'hx-swap="innerHTML" hx-trigger="click"'
+            )
+        else:
+            click_attrs = ""
+
+        colspan = 10 if reveal else 9
+        table_rows.append(
+            f'<tr class="{row_cls}" {click_attrs}>'
+            f'<td class="px-3 py-2">{risk_badge}</td>'
+            f'<td class="px-3 py-2 font-mono text-[11px] text-slate-500">{cid[:8]}</td>'
+            f'<td class="px-3 py-2"><a href="/provider/{c["provider_id"]}" class="text-blue-700 hover:text-blue-900" onclick="event.stopPropagation();">{c["provider_id"]}</a></td>'
+            f'<td class="px-3 py-2"><a href="/member/{c.get("member_id", "")}" class="text-blue-700 hover:text-blue-900" onclick="event.stopPropagation();">{c.get("member_id", "")}</a></td>'
+            f'<td class="px-3 py-2 text-slate-600 text-xs">{c.get("service_date", "")}</td>'
+            f'<td class="px-3 py-2">{lens_chip}</td>'
+            f'<td class="px-3 py-2 text-slate-700 text-xs">{c.get("exam_cpt", "")}</td>'
+            f'<td class="px-3 py-2 text-right font-mono text-slate-700">${int(c.get("billed_amount", 0) or 0):,}</td>'
+            f'<td class="px-3 py-2 text-center">{status}</td>'
+            f'{gt}'
+            f"</tr>"
+        )
+        if triggered:
+            table_rows.append(
+                f'<tr><td colspan="{colspan}" class="px-3"><div id="claims-detail-{cid}"></div></td></tr>'
+            )
+
+    # Filter chips
+    def chip(href: str, label: str, count: int, active: bool) -> str:
+        cls = (
+            "bg-[#003b71] text-white border-[#003b71] font-semibold"
+            if active
+            else "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+        )
+        return (
+            f'<a href="{href}" class="inline-flex items-center gap-2 px-3 py-1.5 rounded border text-sm {cls}">'
+            f'{label} <span class="text-xs opacity-75">{count}</span></a>'
+        )
+
+    reveal_qs = "&reveal=1" if reveal else ""
+    chips = (
+        chip(f"/claims?filter=all{reveal_qs}", "All", total, filter == "all")
+        + chip(f"/claims?filter=flagged{reveal_qs}", "Flagged", flagged_total, filter == "flagged")
+        + chip(f"/claims?filter=clean{reveal_qs}", "Not flagged", clean_total, filter == "clean")
+    )
+
+    if reveal:
+        gt_link = f'<a href="/claims?filter={filter}" class="text-xs text-slate-500 hover:text-slate-700 underline">Hide seeded-fraud labels</a>'
+        gt_header = '<th class="px-3 py-2 font-medium text-center" title="Hidden ground truth — synthetic data only">Ground truth</th>'
+    else:
+        gt_link = f'<a href="/claims?filter={filter}&reveal=1" class="text-xs text-slate-500 hover:text-slate-700 underline">Reveal hidden seeded-fraud labels ({fraud_total})</a>'
+        gt_header = ""
+
+    body = f'''<!DOCTYPE html>
+<html><head>
+  <title>All claims — Insurance Fraud POC</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head><body class="bg-slate-50">
+{_shared_header("data")}
+<main class="max-w-7xl mx-auto p-6">
+  <div class="mb-4 flex items-end justify-between flex-wrap gap-3">
+    <div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Full dataset</div>
+      <h2 class="text-2xl font-semibold text-slate-800">All claims</h2>
+      <p class="text-sm text-slate-600 mt-1 max-w-3xl">
+        The complete {total}-claim dataset that the rule scored. Most claims look perfectly normal — that's the point. The rule's job is to surface the {flagged_total} that are statistically out of pattern; the LLM's job is to triage those.
+      </p>
+    </div>
+    <a href="/" class="text-sm text-blue-700 hover:text-blue-900">← Back to dashboard</a>
+  </div>
+
+  <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Filter:</span>
+      {chips}
+    </div>
+    <div>{gt_link}</div>
+  </div>
+
+  <div class="overflow-hidden rounded-lg shadow bg-white">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr>
+          <th class="px-3 py-2 font-medium">Risk</th>
+          <th class="px-3 py-2 font-medium">Claim</th>
+          <th class="px-3 py-2 font-medium">Provider</th>
+          <th class="px-3 py-2 font-medium">Member</th>
+          <th class="px-3 py-2 font-medium">Date</th>
+          <th class="px-3 py-2 font-medium">Lens</th>
+          <th class="px-3 py-2 font-medium">CPT</th>
+          <th class="px-3 py-2 font-medium text-right">Billed</th>
+          <th class="px-3 py-2 font-medium text-center">Status</th>
+          {gt_header}
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {''.join(table_rows)}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mt-4 text-xs text-slate-500 leading-relaxed max-w-3xl">
+    <span class="font-semibold">Reading guide:</span> click any flagged row to see the rule + Claude triage receipts inline. Click a provider or member ID to pivot to that entity's claim history. The "Reveal hidden seeded-fraud labels" link uncovers the ground-truth column — synthetic data only; would never exist on real claims.
+  </div>
+</main></body></html>'''
+    return HTMLResponse(content=body)
 
 
 @app.post("/reshuffle", response_class=HTMLResponse)
