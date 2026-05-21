@@ -3,11 +3,10 @@
 ## Context
 
 I'm building a 2-hour prototype for a job application to a consultancy
-(Springboard.ai) doing rapid AI ideation for a major vision insurance provider (largest US
-vision insurance provider, ~90M members, ~$10B revenue). The POC
-demonstrates fraud/waste/abuse detection on synthetic vision insurance
-claims, with a Claude-powered reasoning layer that turns flagged claims
-into investigator-ready narratives.
+(Springboard.ai) doing rapid AI ideation in the vision-insurance space.
+The POC demonstrates fraud/waste/abuse detection on synthetic vision
+insurance claims, with a Claude-powered reasoning layer that turns
+flagged claims into investigator-ready narratives.
 
 This is a strategy/PM-flavored build, not a production ML system. The
 intellectual content is in the fraud pattern design and the LLM
@@ -52,7 +51,7 @@ and shows:
 ## Project structure
 
 ```
-vsp-fwa-demo/
+claims-fraud-llm-check/
 ├── .env.example          # template, committed
 ├── .env                  # real secrets, gitignored
 ├── .gitignore
@@ -246,7 +245,7 @@ Single file. Structure:
 </html>
 ```
 
-Use a insurance-corporate palette: primary blue around `#003b71` or `#1e40af`,
+Use an insurance-corporate palette: primary blue around `#003b71` or `#1e40af`,
 accent teal, neutral slate/gray for the body. Nothing fancy — clean
 and professional beats clever.
 

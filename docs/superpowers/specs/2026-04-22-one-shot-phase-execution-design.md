@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-22
 **Project:** Insurance Fraud Detection POC (2-hour prototype)
-**Source brief:** [`../../../Claude Code Brief.md`](../../../Claude%20Code%20Brief.md) (original filename retained as historical record)
+**Source brief:** [`../../../Claude Code Brief.md`](../../../Claude%20Code%20Brief.md)
 
 ## Context
 

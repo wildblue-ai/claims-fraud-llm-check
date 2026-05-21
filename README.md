@@ -1,5 +1,7 @@
 # Insurance Fraud Detection POC
 
+> **This is a demo application.** It illustrates how AI (Claude) can be used to detect and explain potential fraud in insurance claims. It is not a production system. The dataset is fully synthetic, the fraud patterns are injected for illustration, and no real claims data is used or implied.
+
 A prototype fraud-waste-and-abuse (FWA) detection pipeline for vision-insurance claims. It generates a synthetic claims dataset, scores claims with simple rule-based detectors (provider upcoding, billing outliers, etc.), and surfaces flagged claims in a FastAPI + HTMX dashboard. Clicking a flagged claim calls the Anthropic API to produce a 2-3 sentence senior-fraud-analyst narrative, rendered in-place.
 
 **Built in 2 hours.**
